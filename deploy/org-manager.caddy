@@ -1,3 +1,4 @@
 org.tontiancloud.com {
+    import tool_auth org_manager
     reverse_proxy org-manager:3101
 }
