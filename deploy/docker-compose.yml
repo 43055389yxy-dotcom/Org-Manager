@@ -4,8 +4,6 @@ services:
     container_name: org-manager
     restart: unless-stopped
     init: true
-    env_file:
-      - ${ORG_MANAGER_ENV_FILE:-.env.production}
     environment:
       PORT: "3101"
       TZ: Asia/Shanghai

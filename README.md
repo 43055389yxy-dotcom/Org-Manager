@@ -13,11 +13,11 @@ AWS Organizations 成员账号自动分组管理平台。
 
 ## Docker 部署
 
-复制 `.env.example` 为 `deploy/.env.production` 并填入部署账号凭证，然后执行：
+生产服务器通过 EC2 IAM Role 获取 AWS 权限，不需要在容器或 Jenkins 中保存 AK/SK：
 
 ```bash
 docker build -t org-manager:latest .
-ORG_MANAGER_ENV_FILE="$PWD/deploy/.env.production" docker compose -p org-manager -f deploy/docker-compose.yml up -d
+docker compose -p org-manager -f deploy/docker-compose.yml up -d --no-build
 ```
 
 健康检查：`http://127.0.0.1:3101/health`
@@ -26,15 +26,4 @@ Caddy 配置示例位于 `deploy/org-manager.caddy`，容器会加入外部网�
 
 ## Jenkins
 
-Jenkins 使用 Git SCM 检出 `main` 分支后，在“执行 shell”中粘贴 `deploy/jenkins-deploy.sh` 的完整内容。
-
-在 Jenkins 中配置 Secret Text：
-
-- `ORG_MANAGER_AWS_ACCESS_KEY_ID`
-- `ORG_MANAGER_AWS_SECRET_ACCESS_KEY`
-
-可选环境变量：
-
-- `ORG_MANAGER_PUBLIC_URL`，默认 `https://org.tontiancloud.com/`
-- `APP_DATA_REGION`，默认 `us-east-1`
-- `ORG_ACCOUNTS_TABLE`，默认 `OrgOuAccounts`
+Jenkins 使用 Git SCM 检出 `main` 分支后，在“执行 shell”中直接运行 `docker build` 和 `docker compose up`。无需配置 AWS Secret Text。
