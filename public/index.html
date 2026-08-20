@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="自动识别并整理 AWS Organizations 未分组成员账号">
+  <title>组织账号管家</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="组织账号管家首页">
+      <span class="brand-mark">O</span>
+      <span><b>组织账号管家</b><small>AWS Organizations</small></span>
+    </a>
+    <div class="organization-switcher">
+      <label class="sr-only" for="connectionSelect">当前主账号</label>
+      <select id="connectionSelect" aria-label="切换代付主账号"><option value="">正在读取账号…</option></select>
+      <button class="button secondary" id="addAccountButton" type="button">添加主账号</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="page-heading">
+      <div>
+        <p class="kicker">组织总览</p>
+        <h1 id="pageTitle">正在连接组织</h1>
+        <p id="pageSubtitle">读取成员账号和组织单元…</p>
+      </div>
+      <button class="icon-button" id="refreshButton" type="button" aria-label="刷新组织数据" title="刷新">↻</button>
+    </section>
+
+    <section class="attention-card" id="attentionCard">
+      <div class="attention-icon">!</div>
+      <div class="attention-copy">
+        <span class="eyebrow">需要处理</span>
+        <strong><span id="pendingCount">0</span> 个账号等待归入禁止 SP/RI</strong>
+        <p>包括“临时”OU 和 Root 下未分组的成员账号。</p>
+      </div>
+      <button class="button primary" id="scanButton" type="button">全部移入禁止 SP/RI</button>
+    </section>
+
+    <section class="metrics" aria-label="组织数据概览">
+      <article><span>成员账号</span><strong id="totalCount">—</strong></article>
+      <article><span>禁止 SP/RI</span><strong id="blockedCount">—</strong></article>
+      <article><span>临时</span><strong id="temporaryCount">—</strong></article>
+      <article><span>最近同步</span><strong class="time" id="lastSync">—</strong></article>
+    </section>
+
+    <section class="workspace-grid">
+      <article class="panel pending-panel">
+        <div class="panel-heading">
+          <div><span class="eyebrow">待处理</span><h2>待归入禁止 SP/RI</h2></div>
+          <span class="count-badge" id="pendingBadge">0</span>
+        </div>
+        <div id="pendingList" class="pending-list"></div>
+      </article>
+
+      <aside class="panel ou-panel">
+        <div class="panel-heading"><div><span class="eyebrow">目标位置</span><h2>组织单元</h2></div></div>
+        <div class="ou-item">
+          <span class="ou-symbol safe">✓</span>
+          <div><strong>禁止 SP/RI</strong><small id="blockedOuId">正在识别…</small></div>
+          <b id="blockedOuCount">—</b>
+        </div>
+        <div class="ou-item">
+          <span class="ou-symbol temp">⌛</span>
+          <div><strong>临时</strong><small id="temporaryOuId">正在识别…</small></div>
+          <b id="temporaryOuCount">—</b>
+        </div>
+      </aside>
+    </section>
+
+    <section class="panel accounts-panel">
+      <div class="accounts-header">
+        <div><span class="eyebrow">成员目录</span><h2>全部账号</h2></div>
+        <label class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="搜索名称、邮箱或账号 ID"></label>
+      </div>
+      <div class="filters" id="filters" role="tablist" aria-label="筛选账号">
+        <button class="filter active" data-filter="全部" type="button">全部</button>
+        <button class="filter" data-filter="未分组" type="button">未分组</button>
+        <button class="filter" data-filter="禁止 SP/RI" type="button">禁止 SP/RI</button>
+        <button class="filter" data-filter="临时" type="button">临时</button>
+      </div>
+      <div class="account-list" id="accountList"></div>
+    </section>
+  </main>
+
+  <div class="modal-backdrop" id="modal" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <button class="modal-close" id="closeModalButton" type="button" aria-label="关闭">×</button>
+      <span class="eyebrow">添加连接</span>
+      <h2 id="modalTitle">连接 AWS 管理账号</h2>
+      <p class="modal-intro">只需两步。密钥会加密保存在 AWS Secrets Manager，不会保存在浏览器。</p>
+      <div class="setup-step">
+        <span class="step-number">1</span>
+        <div><strong>在目标账号的 CloudShell 授权</strong><p>点击复制，然后粘贴到 CloudShell 执行。</p></div>
+        <button class="button secondary compact" id="copyCommandButton" type="button">复制命令</button>
+      </div>
+      <div class="copy-status" id="copyStatus" aria-live="polite"></div>
+      <div class="setup-step form-step">
+        <span class="step-number">2</span>
+        <div class="form-fields">
+          <strong>粘贴执行结果中的连接信息</strong>
+          <label>显示名称<input id="nameInput" autocomplete="off" placeholder="例如：东跳主账号"></label>
+          <label>Access Key ID<input id="accessKeyInput" autocomplete="off" spellcheck="false" placeholder="AKIA…"></label>
+          <label>Secret Access Key<input id="secretKeyInput" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入 Secret Access Key"></label>
+        </div>
+      </div>
+      <div class="form-message" id="formMessage" aria-live="polite"></div>
+      <button class="button primary connect-button" id="connectButton" type="button">验证并保存连接</button>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

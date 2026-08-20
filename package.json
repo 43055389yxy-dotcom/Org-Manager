@@ -1,0 +1,17 @@
+{
+  "name": "org-ou-manager",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1114.0",
+    "@aws-sdk/client-organizations": "^3.862.0",
+    "@aws-sdk/client-secrets-manager": "^3.1114.0",
+    "@aws-sdk/client-sts": "^3.862.0",
+    "@aws-sdk/lib-dynamodb": "^3.1114.0",
+    "express": "^5.1.0"
+  }
+}

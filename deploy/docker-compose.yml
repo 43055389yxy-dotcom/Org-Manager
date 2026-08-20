@@ -1,0 +1,21 @@
+services:
+  org-manager:
+    image: org-manager:latest
+    container_name: org-manager
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${ORG_MANAGER_ENV_FILE:-.env.production}
+    environment:
+      PORT: "3101"
+      TZ: Asia/Shanghai
+      APP_DATA_REGION: ${APP_DATA_REGION:-us-east-1}
+      ORG_ACCOUNTS_TABLE: ${ORG_ACCOUNTS_TABLE:-OrgOuAccounts}
+    ports:
+      - "127.0.0.1:3101:3101"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3101/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
