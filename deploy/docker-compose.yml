@@ -13,9 +13,15 @@ services:
       ORG_ACCOUNTS_TABLE: ${ORG_ACCOUNTS_TABLE:-OrgOuAccounts}
     ports:
       - "127.0.0.1:3101:3101"
+    networks:
+      - caddy-net
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3101/health"]
       interval: 20s
       timeout: 5s
       retries: 3
       start_period: 15s
+
+networks:
+  caddy-net:
+    external: true

@@ -1,0 +1,3 @@
+org.tontiancloud.com {
+    reverse_proxy org-manager:3101
+}

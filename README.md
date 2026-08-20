@@ -22,6 +22,8 @@ ORG_MANAGER_ENV_FILE="$PWD/deploy/.env.production" docker compose -p org-manager
 
 健康检查：`http://127.0.0.1:3101/health`
 
+Caddy 配置示例位于 `deploy/org-manager.caddy`，容器会加入外部网络 `caddy-net`。
+
 ## Jenkins
 
 Jenkins 使用 Git SCM 检出 `main` 分支后，在“执行 shell”中粘贴 `deploy/jenkins-deploy.sh` 的完整内容。
