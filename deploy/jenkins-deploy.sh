@@ -52,7 +52,8 @@ for i in $(seq 1 30); do
   INTERNAL_READY=false
   if docker exec "$CONTAINER_NAME" wget -qO- http://127.0.0.1:3101/health >/dev/null 2>&1; then INTERNAL_READY=true; fi
   PUBLIC_CODE="$(curl -sS --max-time 8 -o /dev/null -w '%{http_code}' "$PUBLIC_URL" || true)"
-  if [ "$INTERNAL_READY" = true ] && { [ "$PUBLIC_CODE" = "200" ] || [ "$PUBLIC_CODE" = "301" ] || [ "$PUBLIC_CODE" = "302" ]; }; then
+  # 403 表示 Caddy/ITSM 鉴权已生效但 Jenkins 没有登录，也视为公网入口正常。
+  if [ "$INTERNAL_READY" = true ] && { [ "$PUBLIC_CODE" = "200" ] || [ "$PUBLIC_CODE" = "301" ] || [ "$PUBLIC_CODE" = "302" ] || [ "$PUBLIC_CODE" = "403" ]; }; then
     echo "容器健康检查：成功"
     echo "公网检查：${PUBLIC_CODE}"
     echo "部署成功：${PUBLIC_URL}"
