@@ -8,6 +8,7 @@
         "dynamodb:DescribeTable",
         "dynamodb:GetItem",
         "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
         "dynamodb:UpdateItem",
         "dynamodb:Scan"
       ],
@@ -18,6 +19,7 @@
       "Effect": "Allow",
       "Action": [
         "secretsmanager:CreateSecret",
+        "secretsmanager:DeleteSecret",
         "secretsmanager:DescribeSecret",
         "secretsmanager:GetSecretValue",
         "secretsmanager:PutSecretValue",

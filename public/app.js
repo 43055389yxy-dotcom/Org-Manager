@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { connections: [], connectionId: null, accounts: [], stats: {}, targetOus: {}, filter: '全部', loading: false };
+const state = { connections: [], connectionId: null, accounts: [], stats: {}, targetOus: {}, filter: '全部', loading: false, modalMode: 'add', editingId: null };
 
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
@@ -12,8 +12,30 @@ function toast(message) {
 function setLoading(value) {
   state.loading = value; document.body.classList.toggle('loading', value); $('refreshButton').disabled = value;
 }
-function openModal() { $('modal').hidden = false; $('nameInput').focus(); }
+function clearConnectionForm() {
+  $('nameInput').value = $('accessKeyInput').value = $('secretKeyInput').value = '';
+  $('formMessage').textContent = ''; $('copyStatus').textContent = ''; $('copyCommandButton').textContent = '复制命令';
+}
+function openAddModal() {
+  state.modalMode = 'add'; state.editingId = null; clearConnectionForm();
+  $('modalEyebrow').textContent = '添加连接'; $('modalTitle').textContent = '连接 AWS 管理账号';
+  $('modalIntro').textContent = '只需两步。密钥会加密保存在 AWS Secrets Manager，不会保存在浏览器。';
+  $('authorizationStep').hidden = false; $('formTitle').textContent = '粘贴执行结果中的连接信息';
+  $('accessKeyOptional').textContent = $('secretKeyOptional').textContent = '';
+  $('connectButton').textContent = '验证并保存连接'; $('modal').hidden = false; $('nameInput').focus();
+}
+function openEditModal(accountId) {
+  const connection = state.connections.find(item => item.accountId === accountId); if (!connection) return;
+  state.modalMode = 'edit'; state.editingId = accountId; clearConnectionForm();
+  $('modalEyebrow').textContent = '编辑连接'; $('modalTitle').textContent = `编辑 ${connection.name}`;
+  $('modalIntro').textContent = `账号 ID：${accountId}。只改名称时，AK/SK 留空即可；填写新密钥时会重新验证。`;
+  $('authorizationStep').hidden = true; $('formTitle').textContent = '修改连接信息'; $('nameInput').value = connection.name || '';
+  $('accessKeyOptional').textContent = $('secretKeyOptional').textContent = '（不修改请留空）';
+  $('connectButton').textContent = '保存修改'; $('managerModal').hidden = true; $('modal').hidden = false; $('nameInput').focus();
+}
 function closeModal() { $('modal').hidden = true; $('formMessage').textContent = ''; }
+function openManager() { renderManagedAccounts(); $('managerModal').hidden = false; }
+function closeManager() { $('managerModal').hidden = true; }
 
 async function api(url, options) {
   const response = await fetch(url, options);
@@ -27,7 +49,7 @@ async function loadConnections(preferredId) {
     const data = await api('/api/connections');
     state.connections = data.connections || [];
     renderConnectionSelect();
-    if (!state.connections.length) { renderNoConnection(); openModal(); return; }
+    if (!state.connections.length) { state.connectionId = null; renderNoConnection(); openAddModal(); return; }
     const stored = preferredId || localStorage.getItem('selectedOrganization');
     state.connectionId = state.connections.some(item => item.accountId === stored) ? stored : state.connections[0].accountId;
     $('connectionSelect').value = state.connectionId;
@@ -38,6 +60,17 @@ function renderConnectionSelect() {
   $('connectionSelect').innerHTML = state.connections.length
     ? state.connections.map(item => `<option value="${escapeHtml(item.accountId)}">${escapeHtml(item.name)} · ${escapeHtml(item.accountId)}</option>`).join('')
     : '<option value="">尚未添加主账号</option>';
+  $('manageAccountButton').disabled = state.connections.length === 0;
+  renderManagedAccounts();
+}
+function renderManagedAccounts() {
+  $('managedAccountList').innerHTML = state.connections.length ? state.connections.map(item => `
+    <div class="managed-account-row">
+      <span class="avatar">${escapeHtml(initials(item.name))}</span>
+      <div class="row-main"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.accountId)}</small></div>
+      <button class="button secondary compact edit-connection" data-account-id="${escapeHtml(item.accountId)}" type="button">编辑</button>
+      <button class="button danger compact delete-connection" data-account-id="${escapeHtml(item.accountId)}" type="button">删除</button>
+    </div>`).join('') : '<div class="empty-state">还没有添加主账号</div>';
 }
 async function loadOrganization() {
   if (!state.connectionId) return;
@@ -127,14 +160,27 @@ async function copyCommand() {
 }
 async function connectAccount() {
   const name = $('nameInput').value.trim(), accessKeyId = $('accessKeyInput').value.trim(), secretAccessKey = $('secretKeyInput').value.trim();
-  if (!name || !accessKeyId || !secretAccessKey) { $('formMessage').className = 'form-message error'; $('formMessage').textContent = '请把三个字段填写完整'; return; }
-  $('connectButton').disabled = true; $('connectButton').textContent = '正在验证 AWS 权限…';
+  if (!name || (state.modalMode === 'add' && (!accessKeyId || !secretAccessKey))) { $('formMessage').className = 'form-message error'; $('formMessage').textContent = state.modalMode === 'add' ? '请把三个字段填写完整' : '请填写账号名称'; return; }
+  if ((accessKeyId && !secretAccessKey) || (!accessKeyId && secretAccessKey)) { $('formMessage').className = 'form-message error'; $('formMessage').textContent = '更新密钥时，AK 和 SK 必须同时填写'; return; }
+  const editing = state.modalMode === 'edit';
+  $('connectButton').disabled = true; $('connectButton').textContent = accessKeyId ? '正在验证 AWS 权限…' : '正在保存…';
   try {
-    const data = await api('/api/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, accessKeyId, secretAccessKey, region: 'us-east-1' }) });
-    closeModal(); $('nameInput').value = $('accessKeyInput').value = $('secretKeyInput').value = '';
-    await loadConnections(data.id); toast(`已连接 ${data.accountName}`);
+    const data = editing
+      ? await api(`/api/connections/${state.editingId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, accessKeyId, secretAccessKey }) })
+      : await api('/api/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, accessKeyId, secretAccessKey, region: 'us-east-1' }) });
+    const selectedId = editing ? state.editingId : data.id;
+    closeModal(); clearConnectionForm(); await loadConnections(selectedId); toast(editing ? '账号连接已更新' : `已连接 ${data.accountName}`);
   } catch (error) { $('formMessage').className = 'form-message error'; $('formMessage').textContent = error.message; }
-  finally { $('connectButton').disabled = false; $('connectButton').textContent = '验证并保存连接'; }
+  finally { $('connectButton').disabled = false; $('connectButton').textContent = editing ? '保存修改' : '验证并保存连接'; }
+}
+async function deleteConnection(accountId) {
+  const connection = state.connections.find(item => item.accountId === accountId); if (!connection) return;
+  if (!confirm(`确认删除“${connection.name}”（${accountId}）？\n\n这会删除保存的连接和 AK/SK，不会删除 AWS 账号本身。`)) return;
+  try {
+    await api(`/api/connections/${accountId}`, { method: 'DELETE' });
+    closeManager(); localStorage.removeItem('selectedOrganization');
+    await loadConnections(); toast(`已删除 ${connection.name}`);
+  } catch (error) { toast(`删除失败：${error.message}`); }
 }
 async function moveAccount(accountId, destinationParentId, destinationName) {
   if (!destinationParentId) return;
@@ -155,8 +201,11 @@ async function scanUngrouped() {
   finally { $('scanButton').disabled = false; $('scanButton').textContent = '全部移入禁止 SP/RI'; }
 }
 
-$('addAccountButton').addEventListener('click', openModal);
+$('addAccountButton').addEventListener('click', openAddModal);
+$('manageAccountButton').addEventListener('click', openManager);
 $('closeModalButton').addEventListener('click', closeModal);
+$('closeManagerButton').addEventListener('click', closeManager);
+$('managerAddButton').addEventListener('click', () => { closeManager(); openAddModal(); });
 $('copyCommandButton').addEventListener('click', copyCommand);
 $('connectButton').addEventListener('click', connectAccount);
 $('refreshButton').addEventListener('click', loadOrganization);
@@ -175,7 +224,14 @@ $('accountList').addEventListener('change', event => {
   const select = event.target.closest('.move-select'); if (!select) return;
   moveAccount(select.dataset.accountId, select.value, select.options[select.selectedIndex].text.replace('移到', '').trim());
 });
+$('managedAccountList').addEventListener('click', event => {
+  const editButton = event.target.closest('.edit-connection');
+  if (editButton) { openEditModal(editButton.dataset.accountId); return; }
+  const deleteButton = event.target.closest('.delete-connection');
+  if (deleteButton) deleteConnection(deleteButton.dataset.accountId);
+});
 $('modal').addEventListener('click', event => { if (event.target === $('modal')) closeModal(); });
-document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('modal').hidden) closeModal(); });
+$('managerModal').addEventListener('click', event => { if (event.target === $('managerModal')) closeManager(); });
+document.addEventListener('keydown', event => { if (event.key !== 'Escape') return; if (!$('modal').hidden) closeModal(); else if (!$('managerModal').hidden) closeManager(); });
 
 loadConnections();

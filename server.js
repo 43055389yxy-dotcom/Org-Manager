@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { OrganizationsClient, DescribeOrganizationCommand, DescribeOrganizationalUnitCommand, ListAccountsCommand, ListChildrenCommand, ListParentsCommand, ListRootsCommand, MoveAccountCommand } from '@aws-sdk/client-organizations';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { SecretsManagerClient, CreateSecretCommand, GetSecretValueCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { DynamoDBDocumentClient, DeleteCommand, GetCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { SecretsManagerClient, CreateSecretCommand, DeleteSecretCommand, GetSecretValueCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
 const app = express();
 app.use(express.json());
@@ -53,7 +53,13 @@ async function saveConnection(accountId, c) {
     const result = await secrets.send(new CreateSecretCommand({ Name: secretName, Description: 'Org OU Manager target account credentials', SecretString: secretValue, Tags: [{ Key: 'Application', Value: 'OrgOuManager' }] }));
     secretArn = result.ARN;
   }
-  await db.send(new PutCommand({ TableName: tableName, Item: { accountId, name: c.name, region: c.region, secretArn, status: 'CONNECTED', updatedAt: new Date().toISOString() } }));
+  await db.send(new UpdateCommand({
+    TableName: tableName,
+    Key: { accountId },
+    UpdateExpression: 'SET #n = :name, #r = :region, secretArn = :secretArn, #s = :status, updatedAt = :updatedAt',
+    ExpressionAttributeNames: { '#n': 'name', '#r': 'region', '#s': 'status' },
+    ExpressionAttributeValues: { ':name': c.name, ':region': c.region, ':secretArn': secretArn, ':status': 'CONNECTED', ':updatedAt': new Date().toISOString() }
+  }));
 }
 async function loadConnection(accountId) {
   if (connections.has(accountId)) return connections.get(accountId);
@@ -115,12 +121,53 @@ app.post('/api/connect', async (req, res) => {
     if (!name || !accessKeyId || !secretAccessKey) return res.status(400).json({ error: '请填写账号名称、Access Key 和 Secret Key' });
     const c = { name, region: region || 'us-east-1', accessKeyId, secretAccessKey };
     const identity = await new STSClient({ region: c.region, credentials: { accessKeyId, secretAccessKey } }).send(new GetCallerIdentityCommand({}));
-    const data = await accounts(c); const id = identity.Account; connections.set(id, c);
+    const data = await accounts(c); const id = identity.Account;
     await saveConnection(id, c);
+    connections.set(id, c);
     res.json({ id, accountId: identity.Account, accountName: name, ...data });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.get('/api/connections', async (_, res) => { try { const result = await db.send(new ScanCommand({ TableName: tableName, ProjectionExpression: 'accountId, #n, #r, #s, updatedAt, lastScanAt, lastScanMoved', ExpressionAttributeNames: { '#n': 'name', '#r': 'region', '#s': 'status' } })); res.json({ connections: result.Items || [] }); } catch (e) { res.status(500).json({ error: e.message }); } });
+app.put('/api/connections/:id', async (req, res) => {
+  try {
+    const accountId = req.params.id;
+    const name = String(req.body.name || '').trim();
+    const accessKeyId = String(req.body.accessKeyId || '').trim();
+    const secretAccessKey = String(req.body.secretAccessKey || '').trim();
+    if (!name) return res.status(400).json({ error: '请填写账号名称' });
+    if ((accessKeyId && !secretAccessKey) || (!accessKeyId && secretAccessKey)) return res.status(400).json({ error: '更新密钥时必须同时填写 Access Key 和 Secret Key' });
+    const existing = await loadConnection(accountId);
+    if (!existing) return res.status(404).json({ error: '连接不存在' });
+    const updated = { ...existing, name };
+    if (accessKeyId && secretAccessKey) {
+      updated.accessKeyId = accessKeyId;
+      updated.secretAccessKey = secretAccessKey;
+      const identity = await new STSClient({ region: updated.region, credentials: { accessKeyId, secretAccessKey } }).send(new GetCallerIdentityCommand({}));
+      if (identity.Account !== accountId) return res.status(400).json({ error: `这组密钥属于账号 ${identity.Account}，与当前账号 ${accountId} 不一致` });
+      await accounts(updated);
+      await saveConnection(accountId, updated);
+    } else {
+      await db.send(new UpdateCommand({ TableName: tableName, Key: { accountId }, UpdateExpression: 'SET #n = :name, updatedAt = :updatedAt', ExpressionAttributeNames: { '#n': 'name' }, ExpressionAttributeValues: { ':name': name, ':updatedAt': new Date().toISOString() } }));
+    }
+    connections.set(accountId, updated);
+    res.json({ ok: true, accountId, name });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.delete('/api/connections/:id', async (req, res) => {
+  try {
+    const accountId = req.params.id;
+    const result = await db.send(new GetCommand({ TableName: tableName, Key: { accountId } }));
+    if (!result.Item) return res.status(404).json({ error: '连接不存在' });
+    await db.send(new DeleteCommand({ TableName: tableName, Key: { accountId } }));
+    try {
+      await secrets.send(new DeleteSecretCommand({ SecretId: result.Item.secretArn || `org-ou-manager/${accountId}`, ForceDeleteWithoutRecovery: true }));
+    } catch (error) {
+      if (error.name !== 'ResourceNotFoundException') throw error;
+    }
+    connections.delete(accountId);
+    res.json({ ok: true, accountId });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 app.get('/api/accounts/:id', async (req, res) => { try { const c = await loadConnection(req.params.id); if (!c) return res.status(404).json({ error: '连接不存在' }); res.json(await accounts(c)); } catch (e) { res.status(400).json({ error: e.message }); } });
 app.post('/api/move', async (req, res) => {
   try { const { connectionId, accountId, destinationParentId } = req.body; const c = await loadConnection(connectionId); if (!c) return res.status(404).json({ error: '连接不存在' }); const parents = await client(c).send(new ListParentsCommand({ ChildId: accountId })); const sourceParentId = parents.Parents?.[0]?.Id; if (!sourceParentId) throw new Error('找不到账号当前所在的 Root/OU'); await client(c).send(new MoveAccountCommand({ AccountId: accountId, SourceParentId: sourceParentId, DestinationParentId: destinationParentId })); res.json({ ok: true }); }

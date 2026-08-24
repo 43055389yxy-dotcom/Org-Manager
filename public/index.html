@@ -16,7 +16,8 @@
     <div class="organization-switcher">
       <label class="sr-only" for="connectionSelect">当前主账号</label>
       <select id="connectionSelect" aria-label="切换代付主账号"><option value="">正在读取账号…</option></select>
-      <button class="button secondary" id="addAccountButton" type="button">添加主账号</button>
+      <button class="button secondary" id="manageAccountButton" type="button" disabled>管理账号</button>
+      <button class="button primary" id="addAccountButton" type="button">新增账号</button>
     </div>
   </header>
 
@@ -89,10 +90,10 @@
   <div class="modal-backdrop" id="modal" hidden>
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <button class="modal-close" id="closeModalButton" type="button" aria-label="关闭">×</button>
-      <span class="eyebrow">添加连接</span>
+      <span class="eyebrow" id="modalEyebrow">添加连接</span>
       <h2 id="modalTitle">连接 AWS 管理账号</h2>
-      <p class="modal-intro">只需两步。密钥会加密保存在 AWS Secrets Manager，不会保存在浏览器。</p>
-      <div class="setup-step">
+      <p class="modal-intro" id="modalIntro">只需两步。密钥会加密保存在 AWS Secrets Manager，不会保存在浏览器。</p>
+      <div class="setup-step" id="authorizationStep">
         <span class="step-number">1</span>
         <div><strong>在目标账号的 CloudShell 授权</strong><p>点击复制，然后粘贴到 CloudShell 执行。</p></div>
         <button class="button secondary compact" id="copyCommandButton" type="button">复制命令</button>
@@ -101,14 +102,25 @@
       <div class="setup-step form-step">
         <span class="step-number">2</span>
         <div class="form-fields">
-          <strong>粘贴执行结果中的连接信息</strong>
+          <strong id="formTitle">粘贴执行结果中的连接信息</strong>
           <label>显示名称<input id="nameInput" autocomplete="off" placeholder="例如：东跳主账号"></label>
-          <label>Access Key ID<input id="accessKeyInput" autocomplete="off" spellcheck="false" placeholder="AKIA…"></label>
-          <label>Secret Access Key<input id="secretKeyInput" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入 Secret Access Key"></label>
+          <label>Access Key ID <span class="optional-field" id="accessKeyOptional"></span><input id="accessKeyInput" autocomplete="off" spellcheck="false" placeholder="AKIA…"></label>
+          <label>Secret Access Key <span class="optional-field" id="secretKeyOptional"></span><input id="secretKeyInput" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入 Secret Access Key"></label>
         </div>
       </div>
       <div class="form-message" id="formMessage" aria-live="polite"></div>
       <button class="button primary connect-button" id="connectButton" type="button">验证并保存连接</button>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="managerModal" hidden>
+    <section class="modal account-manager" role="dialog" aria-modal="true" aria-labelledby="managerTitle">
+      <button class="modal-close" id="closeManagerButton" type="button" aria-label="关闭">×</button>
+      <span class="eyebrow">连接管理</span>
+      <h2 id="managerTitle">已添加的主账号</h2>
+      <p class="modal-intro">可以修改名称或更新密钥，也可以删除不再使用的连接。</p>
+      <div class="managed-account-list" id="managedAccountList"></div>
+      <button class="button primary manager-add" id="managerAddButton" type="button">＋ 新增主账号</button>
     </section>
   </div>
 
