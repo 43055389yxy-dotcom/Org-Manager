@@ -60,16 +60,14 @@ function renderConnectionSaved() {
   const connection = state.connections.find(item => item.accountId === state.connectionId);
   state.accounts = []; state.stats = {}; state.targetOus = {};
   $('pageTitle').textContent = connection?.name || '组织账号';
-  $('pageSubtitle').textContent = `管理账号 ${state.connectionId} · 连接已保存，可以继续添加其他账号`;
-  $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—'; $('lastSync').textContent = '等待刷新';
+  $('pageSubtitle').textContent = `${state.connectionId} · 已保存`;
+  $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—';
   $('pendingBadge').textContent = '—'; $('scanButton').hidden = true;
-  $('attentionCard').classList.add('resolved'); $('attentionCard').querySelector('.attention-icon').textContent = '✓';
+  $('attentionCard').hidden = true; $('pendingPanel').hidden = true;
   $('attentionTitle').textContent = '连接和密钥已经安全保存';
-  $('attentionCard').querySelector('.attention-copy p').textContent = '可以继续批量添加；需要查看成员时，点击右上角刷新按钮。';
+  $('attentionCard').querySelector('.attention-copy p').textContent = '点击刷新读取成员';
   $('pendingList').innerHTML = '<div class="empty-state">连接已保存，刷新后读取组织成员</div>';
   $('accountList').innerHTML = '<div class="empty-state">点击右上角刷新读取组织成员</div>';
-  $('blockedOuId').textContent = $('temporaryOuId').textContent = '等待刷新';
-  $('blockedOuCount').textContent = $('temporaryOuCount').textContent = '—';
 }
 function renderConnectionSelect() {
   $('connectionSelect').innerHTML = state.connections.length
@@ -105,29 +103,23 @@ function render(data) {
   $('pageTitle').textContent = connection?.name || '组织账号';
   const cacheTime = data.cache?.cachedAt ? new Date(data.cache.cachedAt) : new Date();
   const cacheLabel = data.cache?.hit ? `缓存于 ${cacheTime.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '刚刚更新';
-  $('pageSubtitle').textContent = `管理账号 ${state.connectionId} · ${state.accounts.length} 个组织成员 · ${cacheLabel} · 每天 24:00 自动归档`;
+  $('pageSubtitle').textContent = `${state.connectionId} · ${state.accounts.length} 个成员 · ${cacheLabel}`;
   $('totalCount').textContent = state.stats.total ?? 0;
   $('blockedCount').textContent = state.stats.blocked ?? 0;
-  $('temporaryCount').textContent = state.stats.temporary ?? 0;
-  $('lastSync').textContent = cacheTime.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  $('blockedOuCount').textContent = state.stats.blocked ?? 0;
-  $('temporaryOuCount').textContent = state.stats.temporary ?? 0;
-  $('blockedOuId').textContent = state.targetOus.blocked?.Id || '未找到“禁止 SP/RI”OU';
-  $('temporaryOuId').textContent = state.targetOus.temporary?.Id || '未找到“临时”OU';
+  $('temporaryCount').textContent = state.stats.actionable ?? 0;
   renderPending(); renderAccounts();
 }
 function pendingAccounts() { return state.accounts.filter(account => ['未分组', '临时'].includes(account.Group) && !account.IsManagement); }
 function renderPending() {
   const pending = pendingAccounts();
   $('pendingBadge').textContent = pending.length;
-  $('attentionCard').classList.toggle('resolved', pending.length === 0);
-  $('attentionCard').querySelector('.attention-icon').textContent = pending.length ? '!' : '✓';
+  $('attentionCard').hidden = pending.length === 0;
+  $('pendingPanel').hidden = pending.length === 0;
+  $('attentionCard').querySelector('.attention-icon').textContent = '!';
   $('attentionTitle').textContent = pending.length
-    ? `${pending.length} 个账号等待归入禁止 SP/RI`
-    : '所有成员账号都已完成分组';
-  $('attentionCard').querySelector('.attention-copy p').textContent = pending.length
-    ? '包括“临时”OU 和 Root 下未分组的成员账号。'
-    : '系统会在每天北京时间 24:00 检查新加入和临时分组的成员账号。';
+    ? `${pending.length} 个账号待归位`
+    : '';
+  $('attentionCard').querySelector('.attention-copy p').textContent = '临时与未分组账号';
   $('scanButton').hidden = pending.length === 0;
   $('pendingList').innerHTML = pending.length ? pending.map(account => `
     <div class="pending-row">
@@ -158,8 +150,9 @@ function renderAccounts() {
   }).join('') : '<div class="empty-state">没有符合条件的账号</div>';
 }
 function renderNoConnection() {
-  $('pageTitle').textContent = '添加第一个管理账号'; $('pageSubtitle').textContent = '连接 AWS Organizations 后，系统会自动识别成员账号。';
+  $('pageTitle').textContent = '添加管理账号'; $('pageSubtitle').textContent = '连接 AWS Organizations';
   $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—';
+  $('attentionCard').hidden = true; $('pendingPanel').hidden = true;
   $('pendingList').innerHTML = '<div class="empty-state">尚未连接组织</div>'; $('accountList').innerHTML = '<div class="empty-state">尚未连接组织</div>';
 }
 function renderFatal(message) {
@@ -216,7 +209,7 @@ async function scanUngrouped() {
     const data = await api('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ connectionId: state.connectionId }) });
     toast(`已处理 ${data.count} 个账号`); await loadOrganization();
   } catch (error) { toast(`处理失败：${error.message}`); }
-  finally { $('scanButton').disabled = false; $('scanButton').textContent = '全部移入禁止 SP/RI'; }
+  finally { $('scanButton').disabled = false; $('scanButton').textContent = '立即归位'; }
 }
 
 $('addAccountButton').addEventListener('click', openAddModal);

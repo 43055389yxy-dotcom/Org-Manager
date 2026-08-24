@@ -11,70 +11,51 @@
   <header class="topbar">
     <a class="brand" href="/" aria-label="组织账号管家首页">
       <span class="brand-mark">O</span>
-      <span><b>组织账号管家</b><small>AWS Organizations</small></span>
+      <span><b>组织管家</b></span>
     </a>
     <div class="organization-switcher">
       <label class="sr-only" for="connectionSelect">当前主账号</label>
       <select id="connectionSelect" aria-label="切换代付主账号"><option value="">正在读取账号…</option></select>
-      <button class="button secondary" id="manageAccountButton" type="button" disabled>管理账号</button>
-      <button class="button primary" id="addAccountButton" type="button">新增账号</button>
+      <button class="button secondary" id="manageAccountButton" type="button" disabled>账号</button>
+      <button class="button primary" id="addAccountButton" type="button">＋ 添加</button>
     </div>
   </header>
 
   <main class="shell">
     <section class="page-heading">
       <div>
-        <p class="kicker">组织总览</p>
         <h1 id="pageTitle">正在连接组织</h1>
         <p id="pageSubtitle">读取成员账号和组织单元…</p>
       </div>
       <button class="icon-button" id="refreshButton" type="button" aria-label="刷新组织数据" title="刷新">↻</button>
     </section>
 
-    <section class="attention-card" id="attentionCard">
+    <section class="attention-card" id="attentionCard" hidden>
       <div class="attention-icon">!</div>
       <div class="attention-copy">
-        <span class="eyebrow">需要处理</span>
         <strong id="attentionTitle">0 个账号等待归入禁止 SP/RI</strong>
-        <p>包括“临时”OU 和 Root 下未分组的成员账号。</p>
+        <p>临时与未分组账号</p>
       </div>
-      <button class="button primary" id="scanButton" type="button">全部移入禁止 SP/RI</button>
+      <button class="button primary" id="scanButton" type="button">立即归位</button>
     </section>
 
     <section class="metrics" aria-label="组织数据概览">
       <article><span>成员账号</span><strong id="totalCount">—</strong></article>
       <article><span>禁止 SP/RI</span><strong id="blockedCount">—</strong></article>
-      <article><span>临时</span><strong id="temporaryCount">—</strong></article>
-      <article><span>最近同步</span><strong class="time" id="lastSync">—</strong></article>
+      <article><span>待处理</span><strong id="temporaryCount">—</strong></article>
     </section>
 
-    <section class="workspace-grid">
-      <article class="panel pending-panel">
+    <section class="panel pending-panel" id="pendingPanel" hidden>
         <div class="panel-heading">
-          <div><span class="eyebrow">待处理</span><h2>待归入禁止 SP/RI</h2></div>
+          <div><h2>待处理账号</h2></div>
           <span class="count-badge" id="pendingBadge">0</span>
         </div>
         <div id="pendingList" class="pending-list"></div>
-      </article>
-
-      <aside class="panel ou-panel">
-        <div class="panel-heading"><div><span class="eyebrow">目标位置</span><h2>组织单元</h2></div></div>
-        <div class="ou-item">
-          <span class="ou-symbol safe">✓</span>
-          <div><strong>禁止 SP/RI</strong><small id="blockedOuId">正在识别…</small></div>
-          <b id="blockedOuCount">—</b>
-        </div>
-        <div class="ou-item">
-          <span class="ou-symbol temp">⌛</span>
-          <div><strong>临时</strong><small id="temporaryOuId">正在识别…</small></div>
-          <b id="temporaryOuCount">—</b>
-        </div>
-      </aside>
     </section>
 
     <section class="panel accounts-panel">
       <div class="accounts-header">
-        <div><span class="eyebrow">成员目录</span><h2>全部账号</h2></div>
+        <div><h2>成员账号</h2></div>
         <label class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="搜索名称、邮箱或账号 ID"></label>
       </div>
       <div class="filters" id="filters" role="tablist" aria-label="筛选账号">
