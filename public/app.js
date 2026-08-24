@@ -87,14 +87,15 @@ function renderManagedAccounts() {
       <button class="button danger compact delete-connection" data-account-id="${escapeHtml(item.accountId)}" type="button">删除</button>
     </div>`).join('') : '<div class="empty-state">还没有添加主账号</div>';
 }
-async function loadOrganization() {
+async function loadOrganization(forceRefresh = false) {
   if (!state.connectionId) return;
   setLoading(true);
   try {
-    const data = await api(`/api/accounts/${state.connectionId}`);
+    const data = await api(`/api/accounts/${state.connectionId}${forceRefresh ? '?refresh=1' : ''}`);
     state.accounts = data.accounts || []; state.stats = data.stats || {}; state.targetOus = data.targetOus || {};
     localStorage.setItem('selectedOrganization', state.connectionId);
     render(data);
+    if (data.cacheWarning) toast(`已显示缓存：${data.cacheWarning}`);
   } catch (error) { renderFatal(error.message); }
   finally { setLoading(false); }
 }
@@ -102,11 +103,13 @@ async function loadOrganization() {
 function render(data) {
   const connection = state.connections.find(item => item.accountId === state.connectionId);
   $('pageTitle').textContent = connection?.name || '组织账号';
-  $('pageSubtitle').textContent = `管理账号 ${state.connectionId} · ${state.accounts.length} 个组织成员 · 每天 24:00 自动归档`;
+  const cacheTime = data.cache?.cachedAt ? new Date(data.cache.cachedAt) : new Date();
+  const cacheLabel = data.cache?.hit ? `缓存于 ${cacheTime.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '刚刚更新';
+  $('pageSubtitle').textContent = `管理账号 ${state.connectionId} · ${state.accounts.length} 个组织成员 · ${cacheLabel} · 每天 24:00 自动归档`;
   $('totalCount').textContent = state.stats.total ?? 0;
   $('blockedCount').textContent = state.stats.blocked ?? 0;
   $('temporaryCount').textContent = state.stats.temporary ?? 0;
-  $('lastSync').textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  $('lastSync').textContent = cacheTime.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   $('blockedOuCount').textContent = state.stats.blocked ?? 0;
   $('temporaryOuCount').textContent = state.stats.temporary ?? 0;
   $('blockedOuId').textContent = state.targetOus.blocked?.Id || '未找到“禁止 SP/RI”OU';
@@ -223,7 +226,7 @@ $('closeManagerButton').addEventListener('click', closeManager);
 $('managerAddButton').addEventListener('click', () => { closeManager(); openAddModal(); });
 $('copyCommandButton').addEventListener('click', copyCommand);
 $('connectButton').addEventListener('click', connectAccount);
-$('refreshButton').addEventListener('click', loadOrganization);
+$('refreshButton').addEventListener('click', () => loadOrganization(true));
 $('scanButton').addEventListener('click', scanUngrouped);
 $('connectionSelect').addEventListener('change', event => { state.connectionId = event.target.value; loadOrganization(); });
 $('searchInput').addEventListener('input', renderAccounts);

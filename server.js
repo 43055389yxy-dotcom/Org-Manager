@@ -13,8 +13,11 @@ app.get('/health', (_, res) => res.json({ ok: true, service: 'org-manager', time
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 app.use(express.static(publicDir));
 const connections = new Map();
+const organizationCache = new Map();
+const organizationLoads = new Map();
 const dataRegion = process.env.APP_DATA_REGION || 'us-east-1';
 const tableName = process.env.ORG_ACCOUNTS_TABLE || 'OrgOuAccounts';
+const organizationCacheTtlMs = Math.max(30_000, Number(process.env.ORG_CACHE_TTL_MS || 5 * 60 * 1000));
 const retryConfig = { maxAttempts: 10, retryMode: 'adaptive' };
 const db = DynamoDBDocumentClient.from(new DynamoDBClient({ region: dataRegion, ...retryConfig }));
 const secrets = new SecretsManagerClient({ region: dataRegion, ...retryConfig });
@@ -131,6 +134,26 @@ async function accounts(c) {
     actionable: enriched.filter(a => ['未分组', '临时'].includes(a.Group) && !a.IsManagement).length
   } };
 }
+function cachedResponse(entry, hit, stale = false) {
+  return { ...entry.data, cache: { hit, stale, cachedAt: new Date(entry.cachedAt).toISOString(), expiresAt: new Date(entry.expiresAt).toISOString() } };
+}
+async function organizationData(accountId, c, forceRefresh = false) {
+  const cached = organizationCache.get(accountId);
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cachedResponse(cached, true);
+  if (organizationLoads.has(accountId)) return organizationLoads.get(accountId);
+  const loading = accounts(c).then(data => {
+    const cachedAt = Date.now();
+    const entry = { data, cachedAt, expiresAt: cachedAt + organizationCacheTtlMs };
+    organizationCache.set(accountId, entry);
+    return cachedResponse(entry, false);
+  }).catch(error => {
+    if (cached) return { ...cachedResponse(cached, true, true), cacheWarning: errorMessage(error) };
+    throw error;
+  }).finally(() => organizationLoads.delete(accountId));
+  organizationLoads.set(accountId, loading);
+  return loading;
+}
+function invalidateOrganizationCache(accountId) { organizationCache.delete(accountId); }
 app.post('/api/connect', async (req, res) => {
   try {
     const { name, region, accessKeyId, secretAccessKey } = req.body;
@@ -141,6 +164,7 @@ app.post('/api/connect', async (req, res) => {
     const id = identity.Account;
     await saveConnection(id, c);
     connections.set(id, c);
+    invalidateOrganizationCache(id);
     res.json({ id, accountId: identity.Account, accountName: name });
   } catch (e) { res.status(400).json({ error: errorMessage(e) }); }
 });
@@ -167,6 +191,7 @@ app.put('/api/connections/:id', async (req, res) => {
       await db.send(new UpdateCommand({ TableName: tableName, Key: { accountId }, UpdateExpression: 'SET #n = :name, updatedAt = :updatedAt', ExpressionAttributeNames: { '#n': 'name' }, ExpressionAttributeValues: { ':name': name, ':updatedAt': new Date().toISOString() } }));
     }
     connections.set(accountId, updated);
+    invalidateOrganizationCache(accountId);
     res.json({ ok: true, accountId, name });
   } catch (e) { res.status(400).json({ error: errorMessage(e) }); }
 });
@@ -182,12 +207,13 @@ app.delete('/api/connections/:id', async (req, res) => {
       if (error.name !== 'ResourceNotFoundException') throw error;
     }
     connections.delete(accountId);
+    invalidateOrganizationCache(accountId);
     res.json({ ok: true, accountId });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
-app.get('/api/accounts/:id', async (req, res) => { try { const c = await loadConnection(req.params.id); if (!c) return res.status(404).json({ error: '连接不存在' }); res.json(await accounts(c)); } catch (e) { res.status(400).json({ error: errorMessage(e) }); } });
+app.get('/api/accounts/:id', async (req, res) => { try { const c = await loadConnection(req.params.id); if (!c) return res.status(404).json({ error: '连接不存在' }); res.json(await organizationData(req.params.id, c, req.query.refresh === '1')); } catch (e) { res.status(400).json({ error: errorMessage(e) }); } });
 app.post('/api/move', async (req, res) => {
-  try { const { connectionId, accountId, destinationParentId } = req.body; const c = await loadConnection(connectionId); if (!c) return res.status(404).json({ error: '连接不存在' }); const parents = await client(c).send(new ListParentsCommand({ ChildId: accountId })); const sourceParentId = parents.Parents?.[0]?.Id; if (!sourceParentId) throw new Error('找不到账号当前所在的 Root/OU'); await client(c).send(new MoveAccountCommand({ AccountId: accountId, SourceParentId: sourceParentId, DestinationParentId: destinationParentId })); res.json({ ok: true }); }
+  try { const { connectionId, accountId, destinationParentId } = req.body; const c = await loadConnection(connectionId); if (!c) return res.status(404).json({ error: '连接不存在' }); const parents = await client(c).send(new ListParentsCommand({ ChildId: accountId })); const sourceParentId = parents.Parents?.[0]?.Id; if (!sourceParentId) throw new Error('找不到账号当前所在的 Root/OU'); await client(c).send(new MoveAccountCommand({ AccountId: accountId, SourceParentId: sourceParentId, DestinationParentId: destinationParentId })); invalidateOrganizationCache(connectionId); res.json({ ok: true }); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 async function scanConnection(connectionId) {
@@ -204,6 +230,7 @@ async function scanConnection(connectionId) {
       moved.push(account.Id);
     }
     await db.send(new UpdateCommand({ TableName: tableName, Key: { accountId: connectionId }, UpdateExpression: 'SET lastScanAt = :time, lastScanMoved = :count', ExpressionAttributeValues: { ':time': new Date().toISOString(), ':count': moved.length } }));
+    invalidateOrganizationCache(connectionId);
     return { ok: true, moved, count: moved.length };
 }
 app.post('/api/scan', async (req, res) => {

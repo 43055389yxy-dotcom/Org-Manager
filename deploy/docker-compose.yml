@@ -9,6 +9,7 @@ services:
       TZ: Asia/Shanghai
       APP_DATA_REGION: ${APP_DATA_REGION:-us-east-1}
       ORG_ACCOUNTS_TABLE: ${ORG_ACCOUNTS_TABLE:-OrgOuAccounts}
+      ORG_CACHE_TTL_MS: ${ORG_CACHE_TTL_MS:-300000}
     ports:
       - "127.0.0.1:3101:3101"
     networks:
