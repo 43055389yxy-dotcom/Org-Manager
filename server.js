@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { OrganizationsClient, DescribeOrganizationCommand, DescribeOrganizationalUnitCommand, ListAccountsCommand, ListChildrenCommand, ListParentsCommand, ListRootsCommand, MoveAccountCommand } from '@aws-sdk/client-organizations';
+import { OrganizationsClient, DescribeOrganizationCommand, DescribeOrganizationalUnitCommand, ListAccountsCommand, ListAccountsForParentCommand, ListChildrenCommand, ListParentsCommand, ListRootsCommand, MoveAccountCommand } from '@aws-sdk/client-organizations';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, DeleteCommand, GetCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
@@ -15,8 +15,9 @@ app.use(express.static(publicDir));
 const connections = new Map();
 const dataRegion = process.env.APP_DATA_REGION || 'us-east-1';
 const tableName = process.env.ORG_ACCOUNTS_TABLE || 'OrgOuAccounts';
-const db = DynamoDBDocumentClient.from(new DynamoDBClient({ region: dataRegion }));
-const secrets = new SecretsManagerClient({ region: dataRegion });
+const retryConfig = { maxAttempts: 10, retryMode: 'adaptive' };
+const db = DynamoDBDocumentClient.from(new DynamoDBClient({ region: dataRegion, ...retryConfig }));
+const secrets = new SecretsManagerClient({ region: dataRegion, ...retryConfig });
 const policy = `USER_NAME="org-ou-web-manager"
 POLICY_NAME="OrgOUWebManagerPolicy"
 if aws iam get-user --user-name "$USER_NAME" >/dev/null 2>&1; then
@@ -40,7 +41,14 @@ aws iam create-user --user-name "$USER_NAME"
 aws iam put-user-policy --user-name "$USER_NAME" --policy-name "$POLICY_NAME" --policy-document file:///tmp/org-ou-policy.json
 aws iam create-access-key --user-name "$USER_NAME"`;
 
-function client(c) { return new OrganizationsClient({ region: c.region || 'us-east-1', credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey } }); }
+function client(c) { return new OrganizationsClient({ region: c.region || 'us-east-1', credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey }, ...retryConfig }); }
+function stsClient(c) { return new STSClient({ region: c.region || 'us-east-1', credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey }, ...retryConfig }); }
+function errorMessage(error) {
+  if (['TooManyRequestsException', 'ThrottlingException', 'Throttling'].includes(error?.name) || /too many requests|rate exceeded|throttl/i.test(error?.message || '')) {
+    return 'AWS 接口暂时限流，系统已自动重试。请稍后再刷新组织数据；已经保存成功的连接不会丢失。';
+  }
+  return error?.message || '请求失败';
+}
 async function saveConnection(accountId, c) {
   const secretName = `org-ou-manager/${accountId}`;
   const secretValue = JSON.stringify({ accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey, region: c.region });
@@ -94,19 +102,27 @@ async function accounts(c) {
   const managementId = org.Organization?.ManagementAccountId || org.Organization?.MasterAccountId;
   const out = []; let token;
   do { const r = await orgClient.send(new ListAccountsCommand({ NextToken: token })); out.push(...(r.Accounts || [])); token = r.NextToken; } while (token);
-  const enriched = [];
-  for (let i = 0; i < out.length; i += 10) {
-    const batch = await Promise.all(out.slice(i, i + 10).map(async (account) => {
-      const result = await orgClient.send(new ListParentsCommand({ ChildId: account.Id }));
-      const parent = result.Parents?.[0];
-      let group = '其他 OU';
-      if (parent?.Type === 'ROOT') group = '未分组';
-      if (parent?.Id === temporaryOu?.Id) group = '临时';
-      if (parent?.Id === blockedOu?.Id) group = '禁止 SP/RI';
-      return { ...account, ParentId: parent?.Id, ParentType: parent?.Type, Group: group, IsManagement: account.Id === managementId };
-    }));
-    enriched.push(...batch);
+  async function accountIdsForParent(parentId) {
+    const ids = new Set(); if (!parentId) return ids;
+    let nextToken;
+    do {
+      const page = await orgClient.send(new ListAccountsForParentCommand({ ParentId: parentId, NextToken: nextToken }));
+      for (const account of page.Accounts || []) ids.add(account.Id);
+      nextToken = page.NextToken;
+    } while (nextToken);
+    return ids;
   }
+  const rootAccountSets = await Promise.all((roots.Roots || []).map(root => accountIdsForParent(root.Id)));
+  const rootAccounts = new Set(rootAccountSets.flatMap(set => [...set]));
+  const [temporaryAccounts, blockedAccounts] = await Promise.all([accountIdsForParent(temporaryOu?.Id), accountIdsForParent(blockedOu?.Id)]);
+  const rootByAccount = new Map();
+  (roots.Roots || []).forEach((root, index) => { for (const id of rootAccountSets[index]) rootByAccount.set(id, root.Id); });
+  const enriched = out.map(account => {
+    if (rootAccounts.has(account.Id)) return { ...account, ParentId: rootByAccount.get(account.Id), ParentType: 'ROOT', Group: '未分组', IsManagement: account.Id === managementId };
+    if (temporaryAccounts.has(account.Id)) return { ...account, ParentId: temporaryOu.Id, ParentType: 'ORGANIZATIONAL_UNIT', Group: '临时', IsManagement: account.Id === managementId };
+    if (blockedAccounts.has(account.Id)) return { ...account, ParentId: blockedOu.Id, ParentType: 'ORGANIZATIONAL_UNIT', Group: '禁止 SP/RI', IsManagement: account.Id === managementId };
+    return { ...account, ParentId: null, ParentType: 'ORGANIZATIONAL_UNIT', Group: '其他 OU', IsManagement: account.Id === managementId };
+  });
   return { organization: org.Organization, accounts: enriched, targetOus: { temporary: temporaryOu || null, blocked: blockedOu || null }, stats: {
     total: enriched.length,
     temporary: enriched.filter(a => a.Group === '临时').length,
@@ -120,12 +136,13 @@ app.post('/api/connect', async (req, res) => {
     const { name, region, accessKeyId, secretAccessKey } = req.body;
     if (!name || !accessKeyId || !secretAccessKey) return res.status(400).json({ error: '请填写账号名称、Access Key 和 Secret Key' });
     const c = { name, region: region || 'us-east-1', accessKeyId, secretAccessKey };
-    const identity = await new STSClient({ region: c.region, credentials: { accessKeyId, secretAccessKey } }).send(new GetCallerIdentityCommand({}));
-    const data = await accounts(c); const id = identity.Account;
+    const identity = await stsClient(c).send(new GetCallerIdentityCommand({}));
+    await client(c).send(new DescribeOrganizationCommand({}));
+    const id = identity.Account;
     await saveConnection(id, c);
     connections.set(id, c);
-    res.json({ id, accountId: identity.Account, accountName: name, ...data });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+    res.json({ id, accountId: identity.Account, accountName: name });
+  } catch (e) { res.status(400).json({ error: errorMessage(e) }); }
 });
 app.get('/api/connections', async (_, res) => { try { const result = await db.send(new ScanCommand({ TableName: tableName, ProjectionExpression: 'accountId, #n, #r, #s, updatedAt, lastScanAt, lastScanMoved', ExpressionAttributeNames: { '#n': 'name', '#r': 'region', '#s': 'status' } })); res.json({ connections: result.Items || [] }); } catch (e) { res.status(500).json({ error: e.message }); } });
 app.put('/api/connections/:id', async (req, res) => {
@@ -142,16 +159,16 @@ app.put('/api/connections/:id', async (req, res) => {
     if (accessKeyId && secretAccessKey) {
       updated.accessKeyId = accessKeyId;
       updated.secretAccessKey = secretAccessKey;
-      const identity = await new STSClient({ region: updated.region, credentials: { accessKeyId, secretAccessKey } }).send(new GetCallerIdentityCommand({}));
+      const identity = await stsClient(updated).send(new GetCallerIdentityCommand({}));
       if (identity.Account !== accountId) return res.status(400).json({ error: `这组密钥属于账号 ${identity.Account}，与当前账号 ${accountId} 不一致` });
-      await accounts(updated);
+      await client(updated).send(new DescribeOrganizationCommand({}));
       await saveConnection(accountId, updated);
     } else {
       await db.send(new UpdateCommand({ TableName: tableName, Key: { accountId }, UpdateExpression: 'SET #n = :name, updatedAt = :updatedAt', ExpressionAttributeNames: { '#n': 'name' }, ExpressionAttributeValues: { ':name': name, ':updatedAt': new Date().toISOString() } }));
     }
     connections.set(accountId, updated);
     res.json({ ok: true, accountId, name });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { res.status(400).json({ error: errorMessage(e) }); }
 });
 app.delete('/api/connections/:id', async (req, res) => {
   try {
@@ -168,7 +185,7 @@ app.delete('/api/connections/:id', async (req, res) => {
     res.json({ ok: true, accountId });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
-app.get('/api/accounts/:id', async (req, res) => { try { const c = await loadConnection(req.params.id); if (!c) return res.status(404).json({ error: '连接不存在' }); res.json(await accounts(c)); } catch (e) { res.status(400).json({ error: e.message }); } });
+app.get('/api/accounts/:id', async (req, res) => { try { const c = await loadConnection(req.params.id); if (!c) return res.status(404).json({ error: '连接不存在' }); res.json(await accounts(c)); } catch (e) { res.status(400).json({ error: errorMessage(e) }); } });
 app.post('/api/move', async (req, res) => {
   try { const { connectionId, accountId, destinationParentId } = req.body; const c = await loadConnection(connectionId); if (!c) return res.status(404).json({ error: '连接不存在' }); const parents = await client(c).send(new ListParentsCommand({ ChildId: accountId })); const sourceParentId = parents.Parents?.[0]?.Id; if (!sourceParentId) throw new Error('找不到账号当前所在的 Root/OU'); await client(c).send(new MoveAccountCommand({ AccountId: accountId, SourceParentId: sourceParentId, DestinationParentId: destinationParentId })); res.json({ ok: true }); }
   catch (e) { res.status(400).json({ error: e.message }); }

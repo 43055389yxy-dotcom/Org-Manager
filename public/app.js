@@ -44,7 +44,7 @@ async function api(url, options) {
   return data;
 }
 
-async function loadConnections(preferredId) {
+async function loadConnections(preferredId, loadDetails = true) {
   try {
     const data = await api('/api/connections');
     state.connections = data.connections || [];
@@ -53,8 +53,23 @@ async function loadConnections(preferredId) {
     const stored = preferredId || localStorage.getItem('selectedOrganization');
     state.connectionId = state.connections.some(item => item.accountId === stored) ? stored : state.connections[0].accountId;
     $('connectionSelect').value = state.connectionId;
-    await loadOrganization();
+    if (loadDetails) await loadOrganization(); else renderConnectionSaved();
   } catch (error) { renderFatal(error.message); }
+}
+function renderConnectionSaved() {
+  const connection = state.connections.find(item => item.accountId === state.connectionId);
+  state.accounts = []; state.stats = {}; state.targetOus = {};
+  $('pageTitle').textContent = connection?.name || '组织账号';
+  $('pageSubtitle').textContent = `管理账号 ${state.connectionId} · 连接已保存，可以继续添加其他账号`;
+  $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—'; $('lastSync').textContent = '等待刷新';
+  $('pendingCount').textContent = $('pendingBadge').textContent = '—'; $('scanButton').hidden = true;
+  $('attentionCard').classList.add('resolved'); $('attentionCard').querySelector('.attention-icon').textContent = '✓';
+  $('attentionCard').querySelector('.attention-copy strong').textContent = '连接和密钥已经安全保存';
+  $('attentionCard').querySelector('.attention-copy p').textContent = '可以继续批量添加；需要查看成员时，点击右上角刷新按钮。';
+  $('pendingList').innerHTML = '<div class="empty-state">连接已保存，刷新后读取组织成员</div>';
+  $('accountList').innerHTML = '<div class="empty-state">点击右上角刷新读取组织成员</div>';
+  $('blockedOuId').textContent = $('temporaryOuId').textContent = '等待刷新';
+  $('blockedOuCount').textContent = $('temporaryOuCount').textContent = '—';
 }
 function renderConnectionSelect() {
   $('connectionSelect').innerHTML = state.connections.length
@@ -169,7 +184,7 @@ async function connectAccount() {
       ? await api(`/api/connections/${state.editingId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, accessKeyId, secretAccessKey }) })
       : await api('/api/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, accessKeyId, secretAccessKey, region: 'us-east-1' }) });
     const selectedId = editing ? state.editingId : data.id;
-    closeModal(); clearConnectionForm(); await loadConnections(selectedId); toast(editing ? '账号连接已更新' : `已连接 ${data.accountName}`);
+    closeModal(); clearConnectionForm(); await loadConnections(selectedId, editing); toast(editing ? '账号连接已更新' : `已保存 ${data.accountName}，可以继续添加`);
   } catch (error) { $('formMessage').className = 'form-message error'; $('formMessage').textContent = error.message; }
   finally { $('connectButton').disabled = false; $('connectButton').textContent = editing ? '保存修改' : '验证并保存连接'; }
 }
