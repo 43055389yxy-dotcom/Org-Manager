@@ -62,9 +62,9 @@ function renderConnectionSaved() {
   $('pageTitle').textContent = connection?.name || '组织账号';
   $('pageSubtitle').textContent = `管理账号 ${state.connectionId} · 连接已保存，可以继续添加其他账号`;
   $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—'; $('lastSync').textContent = '等待刷新';
-  $('pendingCount').textContent = $('pendingBadge').textContent = '—'; $('scanButton').hidden = true;
+  $('pendingBadge').textContent = '—'; $('scanButton').hidden = true;
   $('attentionCard').classList.add('resolved'); $('attentionCard').querySelector('.attention-icon').textContent = '✓';
-  $('attentionCard').querySelector('.attention-copy strong').textContent = '连接和密钥已经安全保存';
+  $('attentionTitle').textContent = '连接和密钥已经安全保存';
   $('attentionCard').querySelector('.attention-copy p').textContent = '可以继续批量添加；需要查看成员时，点击右上角刷新按钮。';
   $('pendingList').innerHTML = '<div class="empty-state">连接已保存，刷新后读取组织成员</div>';
   $('accountList').innerHTML = '<div class="empty-state">点击右上角刷新读取组织成员</div>';
@@ -116,11 +116,11 @@ function render(data) {
 function pendingAccounts() { return state.accounts.filter(account => ['未分组', '临时'].includes(account.Group) && !account.IsManagement); }
 function renderPending() {
   const pending = pendingAccounts();
-  $('pendingCount').textContent = pending.length; $('pendingBadge').textContent = pending.length;
+  $('pendingBadge').textContent = pending.length;
   $('attentionCard').classList.toggle('resolved', pending.length === 0);
   $('attentionCard').querySelector('.attention-icon').textContent = pending.length ? '!' : '✓';
-  $('attentionCard').querySelector('.attention-copy strong').innerHTML = pending.length
-    ? `<span id="pendingCount">${pending.length}</span> 个账号等待归入禁止 SP/RI`
+  $('attentionTitle').textContent = pending.length
+    ? `${pending.length} 个账号等待归入禁止 SP/RI`
     : '所有成员账号都已完成分组';
   $('attentionCard').querySelector('.attention-copy p').textContent = pending.length
     ? '包括“临时”OU 和 Root 下未分组的成员账号。'
