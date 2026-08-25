@@ -106,7 +106,7 @@ button, select { -webkit-tap-highlight-color: transparent; }
 .mini-action { padding: 7px 9px; color: var(--blue); background: transparent; border: 0; border-radius: 8px; font-size: 11px; font-weight: 750; cursor: pointer; }
 .mini-action:hover { background: var(--blue-soft); }
 .empty-state { min-height: 90px; display: grid; place-items: center; padding: 18px; color: var(--muted); font-size: 12px; }
-.error-state { padding: 24px; color: var(--danger); text-align: center; font-size: 12px; }
+.error-state { min-height: 110px; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 24px; color: var(--danger); text-align: center; font-size: 12px; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 20px; background: rgba(10, 17, 31, .46); backdrop-filter: blur(5px); animation: fade-in .18s ease both; }
 .modal { position: relative; width: min(560px, 100%); max-height: calc(100vh - 40px); overflow: auto; padding: 25px; background: #fff; border-radius: 17px; box-shadow: 0 28px 80px rgba(8, 15, 28, .25); animation: modal-in .22s ease both; }

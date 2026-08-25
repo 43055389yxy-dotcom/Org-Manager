@@ -47,10 +47,17 @@ aws iam create-access-key --user-name "$USER_NAME"`;
 function client(c) { return new OrganizationsClient({ region: c.region || 'us-east-1', credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey }, ...retryConfig }); }
 function stsClient(c) { return new STSClient({ region: c.region || 'us-east-1', credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey }, ...retryConfig }); }
 function errorMessage(error) {
+  if (['InvalidClientTokenId', 'UnrecognizedClientException', 'ExpiredToken', 'ExpiredTokenException', 'SignatureDoesNotMatch'].includes(error?.name) || /security token included in the request is invalid|invalid.*token|expired token/i.test(error?.message || '')) {
+    return '此账号的 AK/SK 已失效，请更新密钥';
+  }
   if (['TooManyRequestsException', 'ThrottlingException', 'Throttling'].includes(error?.name) || /too many requests|rate exceeded|throttl/i.test(error?.message || '')) {
     return 'AWS 接口暂时限流，系统已自动重试。请稍后再刷新组织数据；已经保存成功的连接不会丢失。';
   }
   return error?.message || '请求失败';
+}
+function errorCode(error) {
+  if (['InvalidClientTokenId', 'UnrecognizedClientException', 'ExpiredToken', 'ExpiredTokenException', 'SignatureDoesNotMatch'].includes(error?.name) || /security token included in the request is invalid|invalid.*token|expired token/i.test(error?.message || '')) return 'INVALID_CREDENTIALS';
+  return undefined;
 }
 async function saveConnection(accountId, c) {
   const secretName = `org-ou-manager/${accountId}`;
@@ -238,7 +245,7 @@ app.delete('/api/connections/:id', async (req, res) => {
     res.json({ ok: true, accountId });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
-app.get('/api/accounts/:id', async (req, res) => { try { const c = await loadConnection(req.params.id); if (!c) return res.status(404).json({ error: '连接不存在' }); res.json(await organizationData(req.params.id, c, req.query.refresh === '1')); } catch (e) { res.status(400).json({ error: errorMessage(e) }); } });
+app.get('/api/accounts/:id', async (req, res) => { try { const c = await loadConnection(req.params.id); if (!c) return res.status(404).json({ error: '连接不存在' }); res.json(await organizationData(req.params.id, c, req.query.refresh === '1')); } catch (e) { res.status(400).json({ error: errorMessage(e), code: errorCode(e) }); } });
 app.put('/api/connections/:id/ou-config', async (req, res) => {
   try {
     const accountId = req.params.id;

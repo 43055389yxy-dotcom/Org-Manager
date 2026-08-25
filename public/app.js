@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { connections: [], connectionId: null, accounts: [], stats: {}, targetOus: {}, availableOus: [], filter: '全部', loading: false, modalMode: 'add', editingId: null };
+const state = { connections: [], connectionId: null, accounts: [], stats: {}, targetOus: {}, availableOus: [], filter: '全部', loading: false, modalMode: 'add', editingId: null, loadSequence: 0 };
 
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
@@ -50,7 +50,7 @@ function closeOuModal() { $('ouModal').hidden = true; $('ouFormMessage').textCon
 async function api(url, options) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || '请求失败');
+  if (!response.ok) { const error = new Error(data.error || '请求失败'); error.code = data.code; throw error; }
   return data;
 }
 
@@ -98,17 +98,22 @@ function renderManagedAccounts() {
 }
 async function loadOrganization(forceRefresh = false) {
   if (!state.connectionId) return;
+  const connectionId = state.connectionId;
+  const loadSequence = ++state.loadSequence;
   setLoading(true);
   try {
-    const data = await api(`/api/accounts/${state.connectionId}${forceRefresh ? '?refresh=1' : ''}`);
+    const data = await api(`/api/accounts/${connectionId}${forceRefresh ? '?refresh=1' : ''}`);
+    if (loadSequence !== state.loadSequence || connectionId !== state.connectionId) return;
     state.accounts = data.accounts || []; state.stats = data.stats || {}; state.targetOus = data.targetOus || {}; state.availableOus = data.availableOus || [];
-    localStorage.setItem('selectedOrganization', state.connectionId);
+    localStorage.setItem('selectedOrganization', connectionId);
     render(data);
     $('ouSettingsButton').disabled = state.availableOus.length === 0;
     if (data.ouSelectionRequired) openOuModal();
     if (data.cacheWarning) toast(`已显示缓存：${data.cacheWarning}`);
-  } catch (error) { renderFatal(error.message); }
-  finally { setLoading(false); }
+  } catch (error) {
+    if (loadSequence === state.loadSequence && connectionId === state.connectionId) renderFatal(error.message, error.code);
+  }
+  finally { if (loadSequence === state.loadSequence) setLoading(false); }
 }
 
 function render(data) {
@@ -169,9 +174,18 @@ function renderNoConnection() {
   $('ouSettingsButton').disabled = true;
   $('pendingList').innerHTML = '<div class="empty-state">尚未连接组织</div>'; $('accountList').innerHTML = '<div class="empty-state">尚未连接组织</div>';
 }
-function renderFatal(message) {
-  $('accountList').innerHTML = `<div class="error-state">读取失败：${escapeHtml(message)}</div>`;
-  toast(`读取失败：${message}`);
+function renderFatal(message, code) {
+  const connection = state.connections.find(item => item.accountId === state.connectionId);
+  state.accounts = []; state.stats = {}; state.targetOus = {}; state.availableOus = [];
+  $('pageTitle').textContent = connection?.name || '连接异常';
+  $('pageSubtitle').textContent = state.connectionId ? `${state.connectionId} · 连接异常` : '连接异常';
+  $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—';
+  $('attentionCard').hidden = true; $('pendingPanel').hidden = true; $('ouSettingsButton').disabled = true;
+  const action = code === 'INVALID_CREDENTIALS' && state.connectionId
+    ? `<button class="button primary compact repair-connection" data-account-id="${escapeHtml(state.connectionId)}" type="button">更新密钥</button>`
+    : '';
+  $('accountList').innerHTML = `<div class="error-state"><strong>${escapeHtml(message)}</strong>${action}</div>`;
+  toast(message);
 }
 
 async function copyCommand() {
@@ -263,6 +277,10 @@ $('pendingList').addEventListener('click', event => {
 $('accountList').addEventListener('change', event => {
   const select = event.target.closest('.move-select'); if (!select) return;
   moveAccount(select.dataset.accountId, select.value, select.options[select.selectedIndex].text.replace('移到', '').trim());
+});
+$('accountList').addEventListener('click', event => {
+  const button = event.target.closest('.repair-connection');
+  if (button) openEditModal(button.dataset.accountId);
 });
 $('managedAccountList').addEventListener('click', event => {
   const editButton = event.target.closest('.edit-connection');
