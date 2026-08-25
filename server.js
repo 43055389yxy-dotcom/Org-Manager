@@ -78,7 +78,15 @@ async function loadConnection(accountId) {
   if (!result.Item) return null;
   const secret = await secrets.send(new GetSecretValueCommand({ SecretId: result.Item.secretArn }));
   const credentials = JSON.parse(secret.SecretString);
-  const c = { name: result.Item.name, region: result.Item.region || credentials.region || 'us-east-1', accessKeyId: credentials.accessKeyId, secretAccessKey: credentials.secretAccessKey };
+  const c = {
+    name: result.Item.name,
+    region: result.Item.region || credentials.region || 'us-east-1',
+    accessKeyId: credentials.accessKeyId,
+    secretAccessKey: credentials.secretAccessKey,
+    temporaryOuId: result.Item.temporaryOuId || null,
+    blockedOuId: result.Item.blockedOuId || null,
+    ouConfigured: result.Item.ouConfigured === true
+  };
   connections.set(accountId, c);
   return c;
 }
@@ -100,8 +108,12 @@ async function accounts(c) {
     } while (nextToken);
   }
   for (const root of roots.Roots || []) await readOus(root.Id);
-  const temporaryOu = allOus.find(ou => ou.Name?.trim() === '临时');
-  const blockedOu = allOus.find(ou => ['禁止SP/RI', '禁止 SP/RI'].includes(ou.Name?.replace(/\s+/g, ' ').trim()));
+  const temporaryOu = c.ouConfigured
+    ? allOus.find(ou => ou.Id === c.temporaryOuId)
+    : allOus.find(ou => ou.Name?.trim() === '临时');
+  const blockedOu = c.ouConfigured
+    ? allOus.find(ou => ou.Id === c.blockedOuId)
+    : allOus.find(ou => ['禁止SP/RI', '禁止 SP/RI'].includes(ou.Name?.replace(/\s+/g, ' ').trim()));
   const managementId = org.Organization?.ManagementAccountId || org.Organization?.MasterAccountId;
   const out = []; let token;
   do { const r = await orgClient.send(new ListAccountsCommand({ NextToken: token })); out.push(...(r.Accounts || [])); token = r.NextToken; } while (token);
@@ -126,13 +138,24 @@ async function accounts(c) {
     if (blockedAccounts.has(account.Id)) return { ...account, ParentId: blockedOu.Id, ParentType: 'ORGANIZATIONAL_UNIT', Group: '禁止 SP/RI', IsManagement: account.Id === managementId };
     return { ...account, ParentId: null, ParentType: 'ORGANIZATIONAL_UNIT', Group: '其他 OU', IsManagement: account.Id === managementId };
   });
-  return { organization: org.Organization, accounts: enriched, targetOus: { temporary: temporaryOu || null, blocked: blockedOu || null }, stats: {
+  const availableOus = allOus
+    .map(ou => ({ Id: ou.Id, Name: ou.Name, Path: ou.Path || '' }))
+    .sort((a, b) => String(a.Name).localeCompare(String(b.Name), 'zh-CN'));
+  return {
+    organization: org.Organization,
+    accounts: enriched,
+    availableOus,
+    ouConfigured: c.ouConfigured,
+    ouSelectionRequired: !blockedOu || (!temporaryOu && !c.ouConfigured),
+    targetOus: { temporary: temporaryOu || null, blocked: blockedOu || null },
+    stats: {
     total: enriched.length,
     temporary: enriched.filter(a => a.Group === '临时').length,
     blocked: enriched.filter(a => a.Group === '禁止 SP/RI').length,
     ungrouped: enriched.filter(a => a.Group === '未分组' && !a.IsManagement).length,
     actionable: enriched.filter(a => ['未分组', '临时'].includes(a.Group) && !a.IsManagement).length
-  } };
+    }
+  };
 }
 function cachedResponse(entry, hit, stale = false) {
   return { ...entry.data, cache: { hit, stale, cachedAt: new Date(entry.cachedAt).toISOString(), expiresAt: new Date(entry.expiresAt).toISOString() } };
@@ -163,6 +186,10 @@ app.post('/api/connect', async (req, res) => {
     await client(c).send(new DescribeOrganizationCommand({}));
     const id = identity.Account;
     await saveConnection(id, c);
+    const saved = await db.send(new GetCommand({ TableName: tableName, Key: { accountId: id } }));
+    c.temporaryOuId = saved.Item?.temporaryOuId || null;
+    c.blockedOuId = saved.Item?.blockedOuId || null;
+    c.ouConfigured = saved.Item?.ouConfigured === true;
     connections.set(id, c);
     invalidateOrganizationCache(id);
     res.json({ id, accountId: identity.Account, accountName: name });
@@ -212,6 +239,31 @@ app.delete('/api/connections/:id', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.get('/api/accounts/:id', async (req, res) => { try { const c = await loadConnection(req.params.id); if (!c) return res.status(404).json({ error: '连接不存在' }); res.json(await organizationData(req.params.id, c, req.query.refresh === '1')); } catch (e) { res.status(400).json({ error: errorMessage(e) }); } });
+app.put('/api/connections/:id/ou-config', async (req, res) => {
+  try {
+    const accountId = req.params.id;
+    const blockedOuId = String(req.body.blockedOuId || '').trim();
+    const temporaryOuId = String(req.body.temporaryOuId || '').trim() || null;
+    if (!blockedOuId) return res.status(400).json({ error: '请选择“禁止 SP/RI”对应的 OU' });
+    if (temporaryOuId && temporaryOuId === blockedOuId) return res.status(400).json({ error: '临时 OU 和禁止 SP/RI OU 不能相同' });
+    const c = await loadConnection(accountId);
+    if (!c) return res.status(404).json({ error: '连接不存在' });
+    const data = await organizationData(accountId, c, false);
+    const validIds = new Set((data.availableOus || []).map(ou => ou.Id));
+    if (!validIds.has(blockedOuId) || (temporaryOuId && !validIds.has(temporaryOuId))) return res.status(400).json({ error: '选择的 OU 不属于当前组织，请刷新后重试' });
+    await db.send(new UpdateCommand({
+      TableName: tableName,
+      Key: { accountId },
+      UpdateExpression: 'SET blockedOuId = :blocked, temporaryOuId = :temporary, ouConfigured = :configured, updatedAt = :updatedAt',
+      ExpressionAttributeValues: { ':blocked': blockedOuId, ':temporary': temporaryOuId, ':configured': true, ':updatedAt': new Date().toISOString() }
+    }));
+    c.blockedOuId = blockedOuId;
+    c.temporaryOuId = temporaryOuId;
+    c.ouConfigured = true;
+    invalidateOrganizationCache(accountId);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: errorMessage(e) }); }
+});
 app.post('/api/move', async (req, res) => {
   try { const { connectionId, accountId, destinationParentId } = req.body; const c = await loadConnection(connectionId); if (!c) return res.status(404).json({ error: '连接不存在' }); const parents = await client(c).send(new ListParentsCommand({ ChildId: accountId })); const sourceParentId = parents.Parents?.[0]?.Id; if (!sourceParentId) throw new Error('找不到账号当前所在的 Root/OU'); await client(c).send(new MoveAccountCommand({ AccountId: accountId, SourceParentId: sourceParentId, DestinationParentId: destinationParentId })); invalidateOrganizationCache(connectionId); res.json({ ok: true }); }
   catch (e) { res.status(400).json({ error: e.message }); }
@@ -222,7 +274,7 @@ async function scanConnection(connectionId) {
     const data = await accounts(c);
     const managementId = data.organization?.ManagementAccountId || data.organization?.MasterAccountId;
     const targets = data.accounts.filter(a => ['未分组', '临时'].includes(a.Group) && a.Id !== managementId);
-    if (!data.targetOus.blocked?.Id) throw new Error('没有找到名为“禁止SP/RI”的 OU');
+    if (!data.targetOus.blocked?.Id) throw new Error('请先确认“禁止 SP/RI”对应的 OU');
     const orgClient = client(c);
     const moved = [];
     for (const account of targets) {
@@ -243,7 +295,9 @@ async function runDailyScans() {
   try {
     const result = await db.send(new ScanCommand({ TableName: tableName, ProjectionExpression: 'accountId, #s', ExpressionAttributeNames: { '#s': 'status' } }));
     for (const item of result.Items || []) {
-      if (item.status === 'CONNECTED') await scanConnection(item.accountId);
+      if (item.status !== 'CONNECTED') continue;
+      try { await scanConnection(item.accountId); }
+      catch (error) { console.error(`Daily scan failed for ${item.accountId}:`, errorMessage(error)); }
     }
   } catch (error) { console.error('Daily organization scan failed:', error.message); }
 }

@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { connections: [], connectionId: null, accounts: [], stats: {}, targetOus: {}, filter: '全部', loading: false, modalMode: 'add', editingId: null };
+const state = { connections: [], connectionId: null, accounts: [], stats: {}, targetOus: {}, availableOus: [], filter: '全部', loading: false, modalMode: 'add', editingId: null };
 
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
@@ -36,6 +36,16 @@ function openEditModal(accountId) {
 function closeModal() { $('modal').hidden = true; $('formMessage').textContent = ''; }
 function openManager() { renderManagedAccounts(); $('managerModal').hidden = false; }
 function closeManager() { $('managerModal').hidden = true; }
+function openOuModal() {
+  if (!state.connectionId || !state.availableOus.length) { toast('请先刷新组织数据'); return; }
+  const options = state.availableOus.map(ou => `<option value="${escapeHtml(ou.Id)}">${escapeHtml(ou.Name)} · ${escapeHtml(ou.Id)}</option>`).join('');
+  $('blockedOuSelect').innerHTML = `<option value="">请选择</option>${options}`;
+  $('temporaryOuSelect').innerHTML = `<option value="">不使用临时 OU</option>${options}`;
+  $('blockedOuSelect').value = state.targetOus.blocked?.Id || '';
+  $('temporaryOuSelect').value = state.targetOus.temporary?.Id || '';
+  $('ouFormMessage').textContent = ''; $('ouModal').hidden = false;
+}
+function closeOuModal() { $('ouModal').hidden = true; $('ouFormMessage').textContent = ''; }
 
 async function api(url, options) {
   const response = await fetch(url, options);
@@ -58,12 +68,13 @@ async function loadConnections(preferredId, loadDetails = true) {
 }
 function renderConnectionSaved() {
   const connection = state.connections.find(item => item.accountId === state.connectionId);
-  state.accounts = []; state.stats = {}; state.targetOus = {};
+  state.accounts = []; state.stats = {}; state.targetOus = {}; state.availableOus = [];
   $('pageTitle').textContent = connection?.name || '组织账号';
   $('pageSubtitle').textContent = `${state.connectionId} · 已保存`;
   $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—';
   $('pendingBadge').textContent = '—'; $('scanButton').hidden = true;
   $('attentionCard').hidden = true; $('pendingPanel').hidden = true;
+  $('ouSettingsButton').disabled = true;
   $('attentionTitle').textContent = '连接和密钥已经安全保存';
   $('attentionCard').querySelector('.attention-copy p').textContent = '点击刷新读取成员';
   $('pendingList').innerHTML = '<div class="empty-state">连接已保存，刷新后读取组织成员</div>';
@@ -90,9 +101,11 @@ async function loadOrganization(forceRefresh = false) {
   setLoading(true);
   try {
     const data = await api(`/api/accounts/${state.connectionId}${forceRefresh ? '?refresh=1' : ''}`);
-    state.accounts = data.accounts || []; state.stats = data.stats || {}; state.targetOus = data.targetOus || {};
+    state.accounts = data.accounts || []; state.stats = data.stats || {}; state.targetOus = data.targetOus || {}; state.availableOus = data.availableOus || [];
     localStorage.setItem('selectedOrganization', state.connectionId);
     render(data);
+    $('ouSettingsButton').disabled = state.availableOus.length === 0;
+    if (data.ouSelectionRequired) openOuModal();
     if (data.cacheWarning) toast(`已显示缓存：${data.cacheWarning}`);
   } catch (error) { renderFatal(error.message); }
   finally { setLoading(false); }
@@ -153,6 +166,7 @@ function renderNoConnection() {
   $('pageTitle').textContent = '添加管理账号'; $('pageSubtitle').textContent = '连接 AWS Organizations';
   $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—';
   $('attentionCard').hidden = true; $('pendingPanel').hidden = true;
+  $('ouSettingsButton').disabled = true;
   $('pendingList').innerHTML = '<div class="empty-state">尚未连接组织</div>'; $('accountList').innerHTML = '<div class="empty-state">尚未连接组织</div>';
 }
 function renderFatal(message) {
@@ -202,6 +216,7 @@ async function moveAccount(accountId, destinationParentId, destinationName) {
   } catch (error) { toast(`移动失败：${error.message}`); renderAccounts(); }
 }
 async function scanUngrouped() {
+  if (!state.targetOus.blocked?.Id) { openOuModal(); return; }
   const count = pendingAccounts().length;
   if (!count || !confirm(`确认把“临时”和“未分组”中的 ${count} 个账号全部移到“禁止 SP/RI”？`)) return;
   $('scanButton').disabled = true; $('scanButton').textContent = '正在处理…';
@@ -210,6 +225,17 @@ async function scanUngrouped() {
     toast(`已处理 ${data.count} 个账号`); await loadOrganization();
   } catch (error) { toast(`处理失败：${error.message}`); }
   finally { $('scanButton').disabled = false; $('scanButton').textContent = '立即归位'; }
+}
+async function saveOuConfig() {
+  const blockedOuId = $('blockedOuSelect').value;
+  const temporaryOuId = $('temporaryOuSelect').value;
+  if (!blockedOuId) { $('ouFormMessage').className = 'form-message error'; $('ouFormMessage').textContent = '请选择禁止 SP/RI 对应的 OU'; return; }
+  $('saveOuConfigButton').disabled = true; $('saveOuConfigButton').textContent = '保存中…';
+  try {
+    await api(`/api/connections/${state.connectionId}/ou-config`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blockedOuId, temporaryOuId }) });
+    closeOuModal(); toast('OU 配置已保存'); await loadOrganization(true);
+  } catch (error) { $('ouFormMessage').className = 'form-message error'; $('ouFormMessage').textContent = error.message; }
+  finally { $('saveOuConfigButton').disabled = false; $('saveOuConfigButton').textContent = '保存'; }
 }
 
 $('addAccountButton').addEventListener('click', openAddModal);
@@ -220,6 +246,9 @@ $('managerAddButton').addEventListener('click', () => { closeManager(); openAddM
 $('copyCommandButton').addEventListener('click', copyCommand);
 $('connectButton').addEventListener('click', connectAccount);
 $('refreshButton').addEventListener('click', () => loadOrganization(true));
+$('ouSettingsButton').addEventListener('click', openOuModal);
+$('closeOuModalButton').addEventListener('click', closeOuModal);
+$('saveOuConfigButton').addEventListener('click', saveOuConfig);
 $('scanButton').addEventListener('click', scanUngrouped);
 $('connectionSelect').addEventListener('change', event => { state.connectionId = event.target.value; loadOrganization(); });
 $('searchInput').addEventListener('input', renderAccounts);
@@ -243,6 +272,7 @@ $('managedAccountList').addEventListener('click', event => {
 });
 $('modal').addEventListener('click', event => { if (event.target === $('modal')) closeModal(); });
 $('managerModal').addEventListener('click', event => { if (event.target === $('managerModal')) closeManager(); });
-document.addEventListener('keydown', event => { if (event.key !== 'Escape') return; if (!$('modal').hidden) closeModal(); else if (!$('managerModal').hidden) closeManager(); });
+$('ouModal').addEventListener('click', event => { if (event.target === $('ouModal')) closeOuModal(); });
+document.addEventListener('keydown', event => { if (event.key !== 'Escape') return; if (!$('modal').hidden) closeModal(); else if (!$('managerModal').hidden) closeManager(); else if (!$('ouModal').hidden) closeOuModal(); });
 
 loadConnections();

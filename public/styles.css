@@ -48,6 +48,7 @@ button, select { -webkit-tap-highlight-color: transparent; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
 .page-heading h1 { margin: 0; font-size: clamp(24px, 3vw, 32px); line-height: 1.15; letter-spacing: -.025em; }
 .page-heading p { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
+.heading-actions { display: flex; align-items: center; gap: 7px; }
 .icon-button { width: 38px; height: 38px; display: grid; place-items: center; flex: none; color: var(--text); background: #fff; border: 1px solid var(--line); border-radius: 10px; font-size: 18px; cursor: pointer; transition: transform .18s, border-color .18s, background .18s; }
 .icon-button:hover { border-color: #c8cfda; background: #fafbfc; transform: rotate(18deg); }
 
@@ -123,6 +124,10 @@ button, select { -webkit-tap-highlight-color: transparent; }
 .form-fields label { display: block; margin-top: 10px; color: var(--muted); font-size: 11px; }
 .form-fields input { width: 100%; height: 38px; margin-top: 4px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; outline: 0; transition: border-color .18s, box-shadow .18s; }
 .form-fields input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.ou-config-fields { display: grid; gap: 12px; }
+.ou-config-fields label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.ou-config-fields select { width: 100%; height: 40px; padding: 0 10px; color: var(--text); background: #fff; border: 1px solid var(--line); border-radius: 9px; outline: 0; }
+.ou-config-fields select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
 .optional-field { font-weight: 400; }
 .copy-status, .form-message { min-height: 18px; margin: 5px 2px 0; color: var(--green); font-size: 11px; }
 .form-message.error { color: var(--danger); }

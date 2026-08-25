@@ -27,7 +27,10 @@
         <h1 id="pageTitle">正在连接组织</h1>
         <p id="pageSubtitle">读取成员账号和组织单元…</p>
       </div>
-      <button class="icon-button" id="refreshButton" type="button" aria-label="刷新组织数据" title="刷新">↻</button>
+      <div class="heading-actions">
+        <button class="button secondary compact" id="ouSettingsButton" type="button" disabled>OU</button>
+        <button class="icon-button" id="refreshButton" type="button" aria-label="刷新组织数据" title="刷新">↻</button>
+      </div>
     </section>
 
     <section class="attention-card" id="attentionCard" hidden>
@@ -102,6 +105,21 @@
       <p class="modal-intro">可以修改名称或更新密钥，也可以删除不再使用的连接。</p>
       <div class="managed-account-list" id="managedAccountList"></div>
       <button class="button primary manager-add" id="managerAddButton" type="button">＋ 新增主账号</button>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="ouModal" hidden>
+    <section class="modal ou-config-modal" role="dialog" aria-modal="true" aria-labelledby="ouModalTitle">
+      <button class="modal-close" id="closeOuModalButton" type="button" aria-label="关闭">×</button>
+      <span class="eyebrow">OU 映射</span>
+      <h2 id="ouModalTitle">确认组织单元</h2>
+      <p class="modal-intro">名称不一致时，选择实际对应的 OU。保存后自动归位会一直使用此配置。</p>
+      <div class="ou-config-fields">
+        <label>禁止 SP/RI<select id="blockedOuSelect"><option value="">请选择</option></select></label>
+        <label>临时<select id="temporaryOuSelect"><option value="">不使用临时 OU</option></select></label>
+      </div>
+      <div class="form-message" id="ouFormMessage" aria-live="polite"></div>
+      <button class="button primary connect-button" id="saveOuConfigButton" type="button">保存</button>
     </section>
   </div>
 
