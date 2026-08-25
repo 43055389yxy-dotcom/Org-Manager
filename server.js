@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { OrganizationsClient, DescribeOrganizationCommand, DescribeOrganizationalUnitCommand, ListAccountsCommand, ListAccountsForParentCommand, ListChildrenCommand, ListParentsCommand, ListRootsCommand, MoveAccountCommand } from '@aws-sdk/client-organizations';
+import { OrganizationsClient, CreateOrganizationalUnitCommand, DescribeOrganizationCommand, DescribeOrganizationalUnitCommand, ListAccountsCommand, ListAccountsForParentCommand, ListChildrenCommand, ListParentsCommand, ListRootsCommand, MoveAccountCommand } from '@aws-sdk/client-organizations';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, DeleteCommand, GetCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
@@ -38,7 +38,7 @@ if aws iam get-user --user-name "$USER_NAME" >/dev/null 2>&1; then
   aws iam delete-user --user-name "$USER_NAME"
 fi
 cat > /tmp/org-ou-policy.json <<'JSON'
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:DescribeOrganization","organizations:DescribeAccount","organizations:DescribeOrganizationalUnit","organizations:ListAccounts","organizations:ListAccountsForParent","organizations:ListChildren","organizations:ListParents","organizations:ListRoots","organizations:MoveAccount"],"Resource":"*"}]}
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:DescribeOrganization","organizations:DescribeAccount","organizations:DescribeOrganizationalUnit","organizations:ListAccounts","organizations:ListAccountsForParent","organizations:ListChildren","organizations:ListParents","organizations:ListRoots","organizations:CreateOrganizationalUnit","organizations:MoveAccount"],"Resource":"*"}]}
 JSON
 aws iam create-user --user-name "$USER_NAME"
 aws iam put-user-policy --user-name "$USER_NAME" --policy-name "$POLICY_NAME" --policy-document file:///tmp/org-ou-policy.json
@@ -53,10 +53,14 @@ function errorMessage(error) {
   if (['TooManyRequestsException', 'ThrottlingException', 'Throttling'].includes(error?.name) || /too many requests|rate exceeded|throttl/i.test(error?.message || '')) {
     return 'AWS 接口暂时限流，系统已自动重试。请稍后再刷新组织数据；已经保存成功的连接不会丢失。';
   }
+  if (error?.name === 'AccessDeniedException' && /CreateOrganizationalUnit/i.test(error?.message || '')) {
+    return '当前连接缺少创建 OU 权限，请重新运行新版 CloudShell 命令并更新 AK/SK';
+  }
   return error?.message || '请求失败';
 }
 function errorCode(error) {
   if (['InvalidClientTokenId', 'UnrecognizedClientException', 'ExpiredToken', 'ExpiredTokenException', 'SignatureDoesNotMatch'].includes(error?.name) || /security token included in the request is invalid|invalid.*token|expired token/i.test(error?.message || '')) return 'INVALID_CREDENTIALS';
+  if (error?.name === 'AccessDeniedException' && /CreateOrganizationalUnit/i.test(error?.message || '')) return 'OU_CREATE_PERMISSION_REQUIRED';
   return undefined;
 }
 async function saveConnection(accountId, c) {
@@ -97,7 +101,7 @@ async function loadConnection(accountId) {
   connections.set(accountId, c);
   return c;
 }
-async function accounts(c) {
+async function accounts(accountId, c) {
   const orgClient = client(c);
   const org = await orgClient.send(new DescribeOrganizationCommand({}));
   const roots = await orgClient.send(new ListRootsCommand({}));
@@ -118,9 +122,24 @@ async function accounts(c) {
   const temporaryOu = c.ouConfigured
     ? allOus.find(ou => ou.Id === c.temporaryOuId)
     : allOus.find(ou => ou.Name?.trim() === '临时');
-  const blockedOu = c.ouConfigured
-    ? allOus.find(ou => ou.Id === c.blockedOuId)
-    : allOus.find(ou => ['禁止SP/RI', '禁止 SP/RI'].includes(ou.Name?.replace(/\s+/g, ' ').trim()));
+  let blockedOu = (c.ouConfigured ? allOus.find(ou => ou.Id === c.blockedOuId) : null)
+    || allOus.find(ou => ['禁止SP/RI', '禁止 SP/RI'].includes(ou.Name?.replace(/\s+/g, ' ').trim()));
+  if (!blockedOu) {
+    const rootId = roots.Roots?.[0]?.Id;
+    if (!rootId) throw new Error('AWS Organizations 未返回可用 Root，无法创建禁止 SP/RI OU');
+    const created = await orgClient.send(new CreateOrganizationalUnitCommand({ ParentId: rootId, Name: '禁止 SP/RI' }));
+    blockedOu = created.OrganizationalUnit;
+    if (!blockedOu?.Id) throw new Error('AWS 未返回新建 OU 信息，请稍后刷新重试');
+    allOus.push(blockedOu);
+    c.blockedOuId = blockedOu.Id;
+    c.ouConfigured = true;
+    await db.send(new UpdateCommand({
+      TableName: tableName,
+      Key: { accountId },
+      UpdateExpression: 'SET blockedOuId = :blocked, ouConfigured = :configured, updatedAt = :updatedAt',
+      ExpressionAttributeValues: { ':blocked': blockedOu.Id, ':configured': true, ':updatedAt': new Date().toISOString() }
+    }));
+  }
   const managementId = org.Organization?.ManagementAccountId || org.Organization?.MasterAccountId;
   const out = []; let token;
   do { const r = await orgClient.send(new ListAccountsCommand({ NextToken: token })); out.push(...(r.Accounts || [])); token = r.NextToken; } while (token);
@@ -171,7 +190,7 @@ async function organizationData(accountId, c, forceRefresh = false) {
   const cached = organizationCache.get(accountId);
   if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cachedResponse(cached, true);
   if (organizationLoads.has(accountId)) return organizationLoads.get(accountId);
-  const loading = accounts(c).then(data => {
+  const loading = accounts(accountId, c).then(data => {
     const cachedAt = Date.now();
     const entry = { data, cachedAt, expiresAt: cachedAt + organizationCacheTtlMs };
     organizationCache.set(accountId, entry);
@@ -278,7 +297,7 @@ app.post('/api/move', async (req, res) => {
 async function scanConnection(connectionId) {
     const c = await loadConnection(connectionId);
     if (!c) throw new Error('连接不存在');
-    const data = await accounts(c);
+    const data = await accounts(connectionId, c);
     const managementId = data.organization?.ManagementAccountId || data.organization?.MasterAccountId;
     const targets = data.accounts.filter(a => ['未分组', '临时'].includes(a.Group) && a.Id !== managementId);
     if (!data.targetOus.blocked?.Id) throw new Error('请先确认“禁止 SP/RI”对应的 OU');

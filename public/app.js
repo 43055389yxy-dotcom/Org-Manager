@@ -181,7 +181,7 @@ function renderFatal(message, code) {
   $('pageSubtitle').textContent = state.connectionId ? `${state.connectionId} · 连接异常` : '连接异常';
   $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—';
   $('attentionCard').hidden = true; $('pendingPanel').hidden = true; $('ouSettingsButton').disabled = true;
-  const action = code === 'INVALID_CREDENTIALS' && state.connectionId
+  const action = ['INVALID_CREDENTIALS', 'OU_CREATE_PERMISSION_REQUIRED'].includes(code) && state.connectionId
     ? `<button class="button primary compact repair-connection" data-account-id="${escapeHtml(state.connectionId)}" type="button">更新密钥</button>`
     : '';
   $('accountList').innerHTML = `<div class="error-state"><strong>${escapeHtml(message)}</strong>${action}</div>`;
