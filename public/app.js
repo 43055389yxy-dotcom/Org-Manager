@@ -36,6 +36,34 @@ function openEditModal(accountId) {
 function closeModal() { $('modal').hidden = true; $('formMessage').textContent = ''; }
 function openManager() { renderManagedAccounts(); $('managerModal').hidden = false; }
 function closeManager() { $('managerModal').hidden = true; }
+function closeOverview() { $('overviewModal').hidden = true; }
+async function openOverview() {
+  $('overviewModal').hidden = false;
+  $('overviewSummary').innerHTML = '';
+  $('overviewTable').innerHTML = '<div class="overview-loading"><span></span>读取所有组织…</div>';
+  try {
+    const data = await api('/api/overview');
+    const rows = data.rows || [];
+    const available = rows.filter(row => !row.error);
+    const totals = available.reduce((sum, row) => ({
+      members: sum.members + (row.stats?.total || 0), blocked: sum.blocked + (row.stats?.blocked || 0), pending: sum.pending + (row.stats?.actionable || 0)
+    }), { members: 0, blocked: 0, pending: 0 });
+    $('overviewSubtitle').textContent = `${rows.length} 个主账号 · ${rows.length - available.length} 个连接异常`;
+    $('overviewSummary').innerHTML = `
+      <div><span>组织</span><strong>${rows.length}</strong></div><div><span>成员</span><strong>${totals.members}</strong></div>
+      <div><span>已禁止</span><strong>${totals.blocked}</strong></div><div><span>待处理</span><strong>${totals.pending}</strong></div>`;
+    $('overviewTable').innerHTML = rows.length ? rows.map(row => `
+      <button class="overview-row${row.error ? ' has-error' : ''}" type="button" data-account-id="${escapeHtml(row.accountId)}">
+        <span class="overview-account"><strong>${escapeHtml(row.name || '未命名')}</strong><small>${escapeHtml(row.accountId)}</small></span>
+        ${row.error ? `<span class="overview-error">${escapeHtml(row.error)}</span>` : `
+          <span><small>成员</small><strong>${row.stats?.total ?? 0}</strong></span>
+          <span><small>禁止</small><strong>${row.stats?.blocked ?? 0}</strong></span>
+          <span><small>待处理</small><strong>${row.stats?.actionable ?? 0}</strong></span>
+          <span class="ou-state ${row.ouReady ? 'ready' : ''}">${row.ouReady ? 'OU 正常' : '需配置 OU'}</span>`}
+        <span class="overview-arrow">›</span>
+      </button>`).join('') : '<div class="empty-state">还没有已连接账号</div>';
+  } catch (error) { $('overviewTable').innerHTML = `<div class="error-state"><strong>${escapeHtml(error.message)}</strong></div>`; }
+}
 function openOuModal() {
   if (!state.connectionId) { toast('请先选择账号'); return; }
   const options = state.availableOus.map(ou => `<option value="${escapeHtml(ou.Id)}">${escapeHtml(ou.Name)} · ${escapeHtml(ou.Id)}</option>`).join('');
@@ -50,6 +78,31 @@ function openOuModal() {
   $('ouFormMessage').textContent = ''; $('ouModal').hidden = false;
 }
 function closeOuModal() { $('ouModal').hidden = true; $('ouFormMessage').textContent = ''; }
+function closeConnectionMenu() {
+  $('connectionMenu').hidden = true;
+  $('connectionSelect').setAttribute('aria-expanded', 'false');
+  $('connectionPicker').classList.remove('open');
+}
+function toggleConnectionMenu() {
+  if (!state.connections.length) return;
+  const opening = $('connectionMenu').hidden;
+  if (opening) {
+    $('connectionMenu').hidden = false;
+    $('connectionSelect').setAttribute('aria-expanded', 'true');
+    $('connectionPicker').classList.add('open');
+    $('connectionMenu').querySelector('[aria-selected="true"]')?.focus();
+  } else closeConnectionMenu();
+}
+function updateConnectionPicker() {
+  const active = state.connections.find(item => item.accountId === state.connectionId);
+  $('connectionLabel').textContent = active ? `${active.name} · ${active.accountId}` : (state.connections.length ? '选择主账号' : '尚未添加主账号');
+  $('connectionSelect').disabled = state.connections.length === 0;
+  $('connectionMenu').querySelectorAll('.connection-option').forEach(option => {
+    const selected = option.dataset.accountId === state.connectionId;
+    option.setAttribute('aria-selected', String(selected));
+    option.classList.toggle('selected', selected);
+  });
+}
 
 async function api(url, options) {
   const response = await fetch(url, options);
@@ -66,7 +119,7 @@ async function loadConnections(preferredId, loadDetails = true) {
     if (!state.connections.length) { state.connectionId = null; renderNoConnection(); openAddModal(); return; }
     const stored = preferredId || localStorage.getItem('selectedOrganization');
     state.connectionId = state.connections.some(item => item.accountId === stored) ? stored : state.connections[0].accountId;
-    $('connectionSelect').value = state.connectionId;
+    updateConnectionPicker();
     if (loadDetails) await loadOrganization(); else renderConnectionSaved();
   } catch (error) { renderFatal(error.message); }
 }
@@ -85,10 +138,13 @@ function renderConnectionSaved() {
   $('accountList').innerHTML = '<div class="empty-state">点击右上角刷新读取组织成员</div>';
 }
 function renderConnectionSelect() {
-  $('connectionSelect').innerHTML = state.connections.length
-    ? state.connections.map(item => `<option value="${escapeHtml(item.accountId)}">${escapeHtml(item.name)} · ${escapeHtml(item.accountId)}</option>`).join('')
-    : '<option value="">尚未添加主账号</option>';
+  $('connectionMenu').innerHTML = state.connections.map(item => `
+    <button class="connection-option" type="button" role="option" data-account-id="${escapeHtml(item.accountId)}" aria-selected="false">
+      <strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.accountId)}</small>
+    </button>`).join('');
   $('manageAccountButton').disabled = state.connections.length === 0;
+  $('overviewButton').disabled = state.connections.length === 0;
+  updateConnectionPicker();
   renderManagedAccounts();
 }
 function renderManagedAccounts() {
@@ -279,9 +335,11 @@ async function provisionOus() {
 }
 
 $('addAccountButton').addEventListener('click', openAddModal);
+$('overviewButton').addEventListener('click', openOverview);
 $('manageAccountButton').addEventListener('click', openManager);
 $('closeModalButton').addEventListener('click', closeModal);
 $('closeManagerButton').addEventListener('click', closeManager);
+$('closeOverviewButton').addEventListener('click', closeOverview);
 $('managerAddButton').addEventListener('click', () => { closeManager(); openAddModal(); });
 $('copyCommandButton').addEventListener('click', copyCommand);
 $('connectButton').addEventListener('click', connectAccount);
@@ -291,7 +349,21 @@ $('closeOuModalButton').addEventListener('click', closeOuModal);
 $('saveOuConfigButton').addEventListener('click', saveOuConfig);
 $('provisionOuButton').addEventListener('click', provisionOus);
 $('scanButton').addEventListener('click', scanUngrouped);
-$('connectionSelect').addEventListener('change', event => { state.connectionId = event.target.value; loadOrganization(); });
+$('connectionSelect').addEventListener('click', toggleConnectionMenu);
+$('connectionSelect').addEventListener('keydown', event => {
+  if (['ArrowDown', 'Enter', ' '].includes(event.key) && $('connectionMenu').hidden) { event.preventDefault(); toggleConnectionMenu(); }
+});
+$('connectionMenu').addEventListener('click', event => {
+  const option = event.target.closest('.connection-option'); if (!option) return;
+  state.connectionId = option.dataset.accountId; updateConnectionPicker(); closeConnectionMenu(); loadOrganization();
+});
+$('connectionMenu').addEventListener('keydown', event => {
+  const options = [...$('connectionMenu').querySelectorAll('.connection-option')];
+  const index = options.indexOf(document.activeElement);
+  if (event.key === 'ArrowDown') { event.preventDefault(); options[(index + 1) % options.length]?.focus(); }
+  if (event.key === 'ArrowUp') { event.preventDefault(); options[(index - 1 + options.length) % options.length]?.focus(); }
+  if (event.key === 'Escape') { event.preventDefault(); closeConnectionMenu(); $('connectionSelect').focus(); }
+});
 $('searchInput').addEventListener('input', renderAccounts);
 $('filters').addEventListener('click', event => {
   const button = event.target.closest('.filter'); if (!button) return;
@@ -317,7 +389,13 @@ $('managedAccountList').addEventListener('click', event => {
 });
 $('modal').addEventListener('click', event => { if (event.target === $('modal')) closeModal(); });
 $('managerModal').addEventListener('click', event => { if (event.target === $('managerModal')) closeManager(); });
+$('overviewModal').addEventListener('click', event => { if (event.target === $('overviewModal')) closeOverview(); });
+$('overviewTable').addEventListener('click', event => {
+  const row = event.target.closest('.overview-row'); if (!row) return;
+  state.connectionId = row.dataset.accountId; updateConnectionPicker(); closeOverview(); loadOrganization();
+});
 $('ouModal').addEventListener('click', event => { if (event.target === $('ouModal')) closeOuModal(); });
-document.addEventListener('keydown', event => { if (event.key !== 'Escape') return; if (!$('modal').hidden) closeModal(); else if (!$('managerModal').hidden) closeManager(); else if (!$('ouModal').hidden) closeOuModal(); });
+document.addEventListener('keydown', event => { if (event.key !== 'Escape') return; if (!$('modal').hidden) closeModal(); else if (!$('managerModal').hidden) closeManager(); else if (!$('overviewModal').hidden) closeOverview(); else if (!$('ouModal').hidden) closeOuModal(); });
+document.addEventListener('click', event => { if (!$('connectionPicker').contains(event.target)) closeConnectionMenu(); });
 
 loadConnections();

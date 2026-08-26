@@ -318,6 +318,30 @@ app.post('/api/connect', async (req, res) => {
   } catch (e) { res.status(400).json({ error: errorMessage(e) }); }
 });
 app.get('/api/connections', async (_, res) => { try { const result = await db.send(new ScanCommand({ TableName: tableName, ProjectionExpression: 'accountId, #n, #r, #s, updatedAt, lastScanAt, lastScanMoved', ExpressionAttributeNames: { '#n': 'name', '#r': 'region', '#s': 'status' } })); res.json({ connections: result.Items || [] }); } catch (e) { res.status(500).json({ error: e.message }); } });
+app.get('/api/overview', async (_, res) => {
+  try {
+    const result = await db.send(new ScanCommand({ TableName: tableName, ProjectionExpression: 'accountId, #n', ExpressionAttributeNames: { '#n': 'name' } }));
+    const items = result.Items || [];
+    const rows = new Array(items.length);
+    let cursor = 0;
+    async function worker() {
+      while (cursor < items.length) {
+        const index = cursor++;
+        const item = items[index];
+        try {
+          const c = await loadConnection(item.accountId);
+          if (!c) throw new Error('连接不存在');
+          const data = await organizationData(item.accountId, c, false);
+          rows[index] = { accountId: item.accountId, name: item.name, stats: data.stats, ouReady: Boolean(data.targetOus?.temporary?.Id && data.targetOus?.blocked?.Id), cache: data.cache };
+        } catch (error) {
+          rows[index] = { accountId: item.accountId, name: item.name, error: errorMessage(error) };
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(3, items.length) }, worker));
+    res.json({ rows });
+  } catch (e) { res.status(500).json({ error: errorMessage(e) }); }
+});
 app.put('/api/connections/:id', async (req, res) => {
   try {
     const accountId = req.params.id;
