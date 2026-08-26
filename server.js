@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { OrganizationsClient, CreateOrganizationalUnitCommand, DescribeOrganizationCommand, DescribeOrganizationalUnitCommand, ListAccountsCommand, ListAccountsForParentCommand, ListChildrenCommand, ListParentsCommand, ListRootsCommand, MoveAccountCommand } from '@aws-sdk/client-organizations';
+import { OrganizationsClient, AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DescribeOrganizationCommand, DescribeOrganizationalUnitCommand, EnablePolicyTypeCommand, ListAccountsCommand, ListAccountsForParentCommand, ListChildrenCommand, ListParentsCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, MoveAccountCommand } from '@aws-sdk/client-organizations';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, DeleteCommand, GetCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
@@ -38,7 +38,7 @@ if aws iam get-user --user-name "$USER_NAME" >/dev/null 2>&1; then
   aws iam delete-user --user-name "$USER_NAME"
 fi
 cat > /tmp/org-ou-policy.json <<'JSON'
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:DescribeOrganization","organizations:DescribeAccount","organizations:DescribeOrganizationalUnit","organizations:ListAccounts","organizations:ListAccountsForParent","organizations:ListChildren","organizations:ListParents","organizations:ListRoots","organizations:CreateOrganizationalUnit","organizations:MoveAccount"],"Resource":"*"}]}
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:DescribeOrganization","organizations:DescribeAccount","organizations:DescribeOrganizationalUnit","organizations:ListAccounts","organizations:ListAccountsForParent","organizations:ListChildren","organizations:ListParents","organizations:ListRoots","organizations:CreateOrganizationalUnit","organizations:EnablePolicyType","organizations:ListPolicies","organizations:CreatePolicy","organizations:ListPoliciesForTarget","organizations:AttachPolicy","organizations:MoveAccount"],"Resource":"*"}]}
 JSON
 aws iam create-user --user-name "$USER_NAME"
 aws iam put-user-policy --user-name "$USER_NAME" --policy-name "$POLICY_NAME" --policy-document file:///tmp/org-ou-policy.json
@@ -53,14 +53,14 @@ function errorMessage(error) {
   if (['TooManyRequestsException', 'ThrottlingException', 'Throttling'].includes(error?.name) || /too many requests|rate exceeded|throttl/i.test(error?.message || '')) {
     return 'AWS 接口暂时限流，系统已自动重试。请稍后再刷新组织数据；已经保存成功的连接不会丢失。';
   }
-  if (error?.name === 'AccessDeniedException' && /CreateOrganizationalUnit/i.test(error?.message || '')) {
-    return '当前连接缺少创建 OU 权限，请重新运行新版 CloudShell 命令并更新 AK/SK';
+  if (['AccessDeniedException', 'AccessDenied'].includes(error?.name) || /not authorized|access denied/i.test(error?.message || '')) {
+    return '当前连接权限不足，请重新运行最新 CloudShell 授权命令并更新 AK/SK';
   }
   return error?.message || '请求失败';
 }
 function errorCode(error) {
   if (['InvalidClientTokenId', 'UnrecognizedClientException', 'ExpiredToken', 'ExpiredTokenException', 'SignatureDoesNotMatch'].includes(error?.name) || /security token included in the request is invalid|invalid.*token|expired token/i.test(error?.message || '')) return 'INVALID_CREDENTIALS';
-  if (error?.name === 'AccessDeniedException' && /CreateOrganizationalUnit/i.test(error?.message || '')) return 'OU_CREATE_PERMISSION_REQUIRED';
+  if (['AccessDeniedException', 'AccessDenied'].includes(error?.name) || /not authorized|access denied/i.test(error?.message || '')) return 'OU_CREATE_PERMISSION_REQUIRED';
   return undefined;
 }
 async function saveConnection(accountId, c) {
@@ -101,7 +101,19 @@ async function loadConnection(accountId) {
   connections.set(accountId, c);
   return c;
 }
-async function accounts(accountId, c) {
+function normalizeOuName(name) {
+  return String(name || '').trim().toLowerCase().replace(/\s+/g, '').replaceAll('／', '/');
+}
+const temporaryOuAliases = new Set(['临时', 'temporary', 'temp']);
+const blockedOuAliases = new Set(['禁止sp/ri', '禁止购买sp/ri', 'savingsplans/ri', 'savingsplan/ri', 'sp/ri', 'denysp/ri']);
+function resolveTargetOus(allOus, c) {
+  const temporaryOu = (c.ouConfigured ? allOus.find(ou => ou.Id === c.temporaryOuId) : null)
+    || allOus.find(ou => temporaryOuAliases.has(normalizeOuName(ou.Name)));
+  const blockedOu = (c.ouConfigured ? allOus.find(ou => ou.Id === c.blockedOuId) : null)
+    || allOus.find(ou => blockedOuAliases.has(normalizeOuName(ou.Name)));
+  return { temporaryOu, blockedOu };
+}
+async function organizationStructure(c) {
   const orgClient = client(c);
   const org = await orgClient.send(new DescribeOrganizationCommand({}));
   const roots = await orgClient.send(new ListRootsCommand({}));
@@ -119,27 +131,26 @@ async function accounts(accountId, c) {
     } while (nextToken);
   }
   for (const root of roots.Roots || []) await readOus(root.Id);
-  const temporaryOu = c.ouConfigured
-    ? allOus.find(ou => ou.Id === c.temporaryOuId)
-    : allOus.find(ou => ou.Name?.trim() === '临时');
-  let blockedOu = (c.ouConfigured ? allOus.find(ou => ou.Id === c.blockedOuId) : null)
-    || allOus.find(ou => ['禁止SP/RI', '禁止 SP/RI'].includes(ou.Name?.replace(/\s+/g, ' ').trim()));
-  if (!blockedOu) {
-    const rootId = roots.Roots?.[0]?.Id;
-    if (!rootId) throw new Error('AWS Organizations 未返回可用 Root，无法创建禁止 SP/RI OU');
-    const created = await orgClient.send(new CreateOrganizationalUnitCommand({ ParentId: rootId, Name: '禁止 SP/RI' }));
-    blockedOu = created.OrganizationalUnit;
-    if (!blockedOu?.Id) throw new Error('AWS 未返回新建 OU 信息，请稍后刷新重试');
-    allOus.push(blockedOu);
-    c.blockedOuId = blockedOu.Id;
-    c.ouConfigured = true;
-    await db.send(new UpdateCommand({
-      TableName: tableName,
-      Key: { accountId },
-      UpdateExpression: 'SET blockedOuId = :blocked, ouConfigured = :configured, updatedAt = :updatedAt',
-      ExpressionAttributeValues: { ':blocked': blockedOu.Id, ':configured': true, ':updatedAt': new Date().toISOString() }
-    }));
-  }
+  const { temporaryOu, blockedOu } = resolveTargetOus(allOus, c);
+  const availableOus = allOus
+    .map(ou => ({ Id: ou.Id, Name: ou.Name, Path: ou.Path || '' }))
+    .sort((a, b) => String(a.Name).localeCompare(String(b.Name), 'zh-CN'));
+  return { orgClient, org, roots, allOus, temporaryOu, blockedOu, availableOus };
+}
+function ouSetup(structure, c) {
+  const { availableOus, temporaryOu, blockedOu } = structure;
+  return {
+    availableOus,
+    ouConfigured: c.ouConfigured,
+    ouSelectionRequired: !temporaryOu || !blockedOu,
+    ouProvisionSuggested: !temporaryOu || !blockedOu,
+    missingOus: { temporary: !temporaryOu, blocked: !blockedOu },
+    targetOus: { temporary: temporaryOu || null, blocked: blockedOu || null }
+  };
+}
+async function accounts(accountId, c) {
+  const structure = await organizationStructure(c);
+  const { orgClient, org, roots, temporaryOu, blockedOu } = structure;
   const managementId = org.Organization?.ManagementAccountId || org.Organization?.MasterAccountId;
   const out = []; let token;
   do { const r = await orgClient.send(new ListAccountsCommand({ NextToken: token })); out.push(...(r.Accounts || [])); token = r.NextToken; } while (token);
@@ -164,16 +175,10 @@ async function accounts(accountId, c) {
     if (blockedAccounts.has(account.Id)) return { ...account, ParentId: blockedOu.Id, ParentType: 'ORGANIZATIONAL_UNIT', Group: '禁止 SP/RI', IsManagement: account.Id === managementId };
     return { ...account, ParentId: null, ParentType: 'ORGANIZATIONAL_UNIT', Group: '其他 OU', IsManagement: account.Id === managementId };
   });
-  const availableOus = allOus
-    .map(ou => ({ Id: ou.Id, Name: ou.Name, Path: ou.Path || '' }))
-    .sort((a, b) => String(a.Name).localeCompare(String(b.Name), 'zh-CN'));
   return {
     organization: org.Organization,
     accounts: enriched,
-    availableOus,
-    ouConfigured: c.ouConfigured,
-    ouSelectionRequired: !blockedOu || (!temporaryOu && !c.ouConfigured),
-    targetOus: { temporary: temporaryOu || null, blocked: blockedOu || null },
+    ...ouSetup(structure, c),
     stats: {
     total: enriched.length,
     temporary: enriched.filter(a => a.Group === '临时').length,
@@ -182,6 +187,93 @@ async function accounts(accountId, c) {
     actionable: enriched.filter(a => ['未分组', '临时'].includes(a.Group) && !a.IsManagement).length
     }
   };
+}
+async function listAllPolicies(orgClient) {
+  const policies = [];
+  let nextToken;
+  do {
+    const page = await orgClient.send(new ListPoliciesCommand({ Filter: 'SERVICE_CONTROL_POLICY', NextToken: nextToken }));
+    policies.push(...(page.Policies || []));
+    nextToken = page.NextToken;
+  } while (nextToken);
+  return policies;
+}
+async function ensurePolicy(orgClient, existingPolicies, name, description, content) {
+  const existing = existingPolicies.find(item => item.Name === name);
+  if (existing?.Id) return { id: existing.Id, created: false };
+  const result = await orgClient.send(new CreatePolicyCommand({
+    Name: name,
+    Description: description,
+    Type: 'SERVICE_CONTROL_POLICY',
+    Content: JSON.stringify(content)
+  }));
+  const id = result.Policy?.PolicySummary?.Id;
+  if (!id) throw new Error(`AWS 未返回策略 ${name} 的 ID`);
+  existingPolicies.push({ Id: id, Name: name });
+  return { id, created: true };
+}
+async function ensurePolicyAttached(orgClient, targetId, policyId) {
+  let nextToken;
+  do {
+    const page = await orgClient.send(new ListPoliciesForTargetCommand({ TargetId: targetId, Filter: 'SERVICE_CONTROL_POLICY', NextToken: nextToken }));
+    if ((page.Policies || []).some(item => item.Id === policyId)) return false;
+    nextToken = page.NextToken;
+  } while (nextToken);
+  await orgClient.send(new AttachPolicyCommand({ TargetId: targetId, PolicyId: policyId }));
+  return true;
+}
+async function provisionOrganization(accountId, c) {
+  const structure = await organizationStructure(c);
+  const root = structure.roots.Roots?.[0];
+  if (!root?.Id) throw new Error('当前账号不是 Organizations 管理账号，或尚未创建 Organization');
+  const orgClient = structure.orgClient;
+  const scpEnabled = (root.PolicyTypes || []).some(item => item.Type === 'SERVICE_CONTROL_POLICY' && item.Status === 'ENABLED');
+  if (!scpEnabled) await orgClient.send(new EnablePolicyTypeCommand({ RootId: root.Id, PolicyType: 'SERVICE_CONTROL_POLICY' }));
+
+  let temporaryOu = structure.temporaryOu;
+  let blockedOu = structure.blockedOu;
+  const created = { temporaryOu: false, blockedOu: false, spriPolicy: false, organizationsPolicy: false };
+  if (!temporaryOu) {
+    const result = await orgClient.send(new CreateOrganizationalUnitCommand({ ParentId: root.Id, Name: '临时' }));
+    temporaryOu = result.OrganizationalUnit;
+    created.temporaryOu = true;
+  }
+  if (!blockedOu) {
+    const result = await orgClient.send(new CreateOrganizationalUnitCommand({ ParentId: root.Id, Name: '禁止 SP/RI' }));
+    blockedOu = result.OrganizationalUnit;
+    created.blockedOu = true;
+  }
+  if (!temporaryOu?.Id || !blockedOu?.Id) throw new Error('AWS 未返回新建 OU 信息，请稍后重试');
+
+  const policies = await listAllPolicies(orgClient);
+  const spri = await ensurePolicy(orgClient, policies, 'SP/RI-Deny', '禁止SP/RI购买', {
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Deny', Action: ['savingsplans:*', 'rds:PurchaseReservedDBInstancesOffering', 'ec2:PurchaseReservedInstancesOffering'], Resource: '*' }]
+  });
+  const organizations = await ensurePolicy(orgClient, policies, 'Organizations', '阻止成员账户退出组织', {
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Deny', Action: ['organizations:LeaveOrganization'], Resource: '*' }]
+  });
+  created.spriPolicy = spri.created;
+  created.organizationsPolicy = organizations.created;
+
+  await ensurePolicyAttached(orgClient, root.Id, 'p-FullAWSAccess');
+  await ensurePolicyAttached(orgClient, temporaryOu.Id, 'p-FullAWSAccess');
+  await ensurePolicyAttached(orgClient, blockedOu.Id, 'p-FullAWSAccess');
+  await ensurePolicyAttached(orgClient, blockedOu.Id, spri.id);
+  await ensurePolicyAttached(orgClient, blockedOu.Id, organizations.id);
+
+  await db.send(new UpdateCommand({
+    TableName: tableName,
+    Key: { accountId },
+    UpdateExpression: 'SET blockedOuId = :blocked, temporaryOuId = :temporary, ouConfigured = :configured, updatedAt = :updatedAt',
+    ExpressionAttributeValues: { ':blocked': blockedOu.Id, ':temporary': temporaryOu.Id, ':configured': true, ':updatedAt': new Date().toISOString() }
+  }));
+  c.blockedOuId = blockedOu.Id;
+  c.temporaryOuId = temporaryOu.Id;
+  c.ouConfigured = true;
+  invalidateOrganizationCache(accountId);
+  return { ok: true, created, targetOus: { temporary: temporaryOu, blocked: blockedOu } };
 }
 function cachedResponse(entry, hit, stale = false) {
   return { ...entry.data, cache: { hit, stale, cachedAt: new Date(entry.cachedAt).toISOString(), expiresAt: new Date(entry.expiresAt).toISOString() } };
@@ -218,7 +310,11 @@ app.post('/api/connect', async (req, res) => {
     c.ouConfigured = saved.Item?.ouConfigured === true;
     connections.set(id, c);
     invalidateOrganizationCache(id);
-    res.json({ id, accountId: identity.Account, accountName: name });
+    let setup = null;
+    let ouDiscoveryWarning = null;
+    try { setup = ouSetup(await organizationStructure(c), c); }
+    catch (error) { ouDiscoveryWarning = errorMessage(error); }
+    res.json({ id, accountId: identity.Account, accountName: name, ouSetup: setup, ouDiscoveryWarning });
   } catch (e) { res.status(400).json({ error: errorMessage(e) }); }
 });
 app.get('/api/connections', async (_, res) => { try { const result = await db.send(new ScanCommand({ TableName: tableName, ProjectionExpression: 'accountId, #n, #r, #s, updatedAt, lastScanAt, lastScanMoved', ExpressionAttributeNames: { '#n': 'name', '#r': 'region', '#s': 'status' } })); res.json({ connections: result.Items || [] }); } catch (e) { res.status(500).json({ error: e.message }); } });
@@ -289,6 +385,14 @@ app.put('/api/connections/:id/ou-config', async (req, res) => {
     invalidateOrganizationCache(accountId);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: errorMessage(e) }); }
+});
+app.post('/api/connections/:id/provision-ou', async (req, res) => {
+  try {
+    if (req.body?.confirmed !== true) return res.status(400).json({ error: '需要管理员确认后才能创建 OU 和 SCP' });
+    const c = await loadConnection(req.params.id);
+    if (!c) return res.status(404).json({ error: '连接不存在' });
+    res.json(await provisionOrganization(req.params.id, c));
+  } catch (e) { res.status(400).json({ error: errorMessage(e), code: errorCode(e) }); }
 });
 app.post('/api/move', async (req, res) => {
   try { const { connectionId, accountId, destinationParentId } = req.body; const c = await loadConnection(connectionId); if (!c) return res.status(404).json({ error: '连接不存在' }); const parents = await client(c).send(new ListParentsCommand({ ChildId: accountId })); const sourceParentId = parents.Parents?.[0]?.Id; if (!sourceParentId) throw new Error('找不到账号当前所在的 Root/OU'); await client(c).send(new MoveAccountCommand({ AccountId: accountId, SourceParentId: sourceParentId, DestinationParentId: destinationParentId })); invalidateOrganizationCache(connectionId); res.json({ ok: true }); }

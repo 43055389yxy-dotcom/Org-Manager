@@ -114,6 +114,10 @@
       <span class="eyebrow">OU 映射</span>
       <h2 id="ouModalTitle">确认组织单元</h2>
       <p class="modal-intro">名称不一致时，选择实际对应的 OU。保存后自动归位会一直使用此配置。</p>
+      <div class="provision-card" id="provisionCard" hidden>
+        <div><strong id="provisionTitle">未找到标准 OU</strong><p>可以创建“临时”和“禁止 SP/RI”，并配置所需 SCP。</p></div>
+        <button class="button secondary compact" id="provisionOuButton" type="button">创建并配置</button>
+      </div>
       <div class="ou-config-fields">
         <label>禁止 SP/RI<select id="blockedOuSelect"><option value="">请选择</option></select></label>
         <label>临时<select id="temporaryOuSelect"><option value="">不使用临时 OU</option></select></label>

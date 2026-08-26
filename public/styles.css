@@ -124,6 +124,10 @@ button, select { -webkit-tap-highlight-color: transparent; }
 .form-fields label { display: block; margin-top: 10px; color: var(--muted); font-size: 11px; }
 .form-fields input { width: 100%; height: 38px; margin-top: 4px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; outline: 0; transition: border-color .18s, box-shadow .18s; }
 .form-fields input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.provision-card { display: flex; align-items: center; gap: 12px; margin-bottom: 13px; padding: 12px; background: var(--amber-soft); border: 1px solid #f0d9ad; border-radius: 10px; }
+.provision-card > div { flex: 1; min-width: 0; }
+.provision-card strong { display: block; font-size: 12px; }
+.provision-card p { margin: 3px 0 0; color: #947145; font-size: 10px; line-height: 1.45; }
 .ou-config-fields { display: grid; gap: 12px; }
 .ou-config-fields label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
 .ou-config-fields select { width: 100%; height: 40px; padding: 0 10px; color: var(--text); background: #fff; border: 1px solid var(--line); border-radius: 9px; outline: 0; }

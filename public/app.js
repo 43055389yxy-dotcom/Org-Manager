@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { connections: [], connectionId: null, accounts: [], stats: {}, targetOus: {}, availableOus: [], filter: '全部', loading: false, modalMode: 'add', editingId: null, loadSequence: 0 };
+const state = { connections: [], connectionId: null, accounts: [], stats: {}, targetOus: {}, availableOus: [], ouProvisionSuggested: false, missingOus: {}, filter: '全部', loading: false, modalMode: 'add', editingId: null, loadSequence: 0 };
 
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
@@ -37,12 +37,16 @@ function closeModal() { $('modal').hidden = true; $('formMessage').textContent =
 function openManager() { renderManagedAccounts(); $('managerModal').hidden = false; }
 function closeManager() { $('managerModal').hidden = true; }
 function openOuModal() {
-  if (!state.connectionId || !state.availableOus.length) { toast('请先刷新组织数据'); return; }
+  if (!state.connectionId) { toast('请先选择账号'); return; }
   const options = state.availableOus.map(ou => `<option value="${escapeHtml(ou.Id)}">${escapeHtml(ou.Name)} · ${escapeHtml(ou.Id)}</option>`).join('');
   $('blockedOuSelect').innerHTML = `<option value="">请选择</option>${options}`;
   $('temporaryOuSelect').innerHTML = `<option value="">不使用临时 OU</option>${options}`;
   $('blockedOuSelect').value = state.targetOus.blocked?.Id || '';
   $('temporaryOuSelect').value = state.targetOus.temporary?.Id || '';
+  const missing = [state.missingOus.temporary && '临时', state.missingOus.blocked && '禁止 SP/RI'].filter(Boolean);
+  $('provisionCard').hidden = !state.ouProvisionSuggested;
+  $('provisionTitle').textContent = missing.length ? `缺少：${missing.join('、')}` : '未找到标准 OU';
+  $('saveOuConfigButton').hidden = state.availableOus.length === 0;
   $('ouFormMessage').textContent = ''; $('ouModal').hidden = false;
 }
 function closeOuModal() { $('ouModal').hidden = true; $('ouFormMessage').textContent = ''; }
@@ -68,7 +72,7 @@ async function loadConnections(preferredId, loadDetails = true) {
 }
 function renderConnectionSaved() {
   const connection = state.connections.find(item => item.accountId === state.connectionId);
-  state.accounts = []; state.stats = {}; state.targetOus = {}; state.availableOus = [];
+  state.accounts = []; state.stats = {}; state.targetOus = {}; state.availableOus = []; state.ouProvisionSuggested = false; state.missingOus = {};
   $('pageTitle').textContent = connection?.name || '组织账号';
   $('pageSubtitle').textContent = `${state.connectionId} · 已保存`;
   $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—';
@@ -105,9 +109,10 @@ async function loadOrganization(forceRefresh = false) {
     const data = await api(`/api/accounts/${connectionId}${forceRefresh ? '?refresh=1' : ''}`);
     if (loadSequence !== state.loadSequence || connectionId !== state.connectionId) return;
     state.accounts = data.accounts || []; state.stats = data.stats || {}; state.targetOus = data.targetOus || {}; state.availableOus = data.availableOus || [];
+    state.ouProvisionSuggested = data.ouProvisionSuggested === true; state.missingOus = data.missingOus || {};
     localStorage.setItem('selectedOrganization', connectionId);
     render(data);
-    $('ouSettingsButton').disabled = state.availableOus.length === 0;
+    $('ouSettingsButton').disabled = state.availableOus.length === 0 && !state.ouProvisionSuggested;
     if (data.ouSelectionRequired) openOuModal();
     if (data.cacheWarning) toast(`已显示缓存：${data.cacheWarning}`);
   } catch (error) {
@@ -176,7 +181,7 @@ function renderNoConnection() {
 }
 function renderFatal(message, code) {
   const connection = state.connections.find(item => item.accountId === state.connectionId);
-  state.accounts = []; state.stats = {}; state.targetOus = {}; state.availableOus = [];
+  state.accounts = []; state.stats = {}; state.targetOus = {}; state.availableOus = []; state.ouProvisionSuggested = false; state.missingOus = {};
   $('pageTitle').textContent = connection?.name || '连接异常';
   $('pageSubtitle').textContent = state.connectionId ? `${state.connectionId} · 连接异常` : '连接异常';
   $('totalCount').textContent = $('blockedCount').textContent = $('temporaryCount').textContent = '—';
@@ -208,7 +213,16 @@ async function connectAccount() {
       ? await api(`/api/connections/${state.editingId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, accessKeyId, secretAccessKey }) })
       : await api('/api/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, accessKeyId, secretAccessKey, region: 'us-east-1' }) });
     const selectedId = editing ? state.editingId : data.id;
-    closeModal(); clearConnectionForm(); await loadConnections(selectedId, editing); toast(editing ? '账号连接已更新' : `已保存 ${data.accountName}，可以继续添加`);
+    closeModal(); clearConnectionForm(); await loadConnections(selectedId, editing);
+    if (!editing && data.ouSetup) {
+      state.targetOus = data.ouSetup.targetOus || {};
+      state.availableOus = data.ouSetup.availableOus || [];
+      state.ouProvisionSuggested = data.ouSetup.ouProvisionSuggested === true;
+      state.missingOus = data.ouSetup.missingOus || {};
+      $('ouSettingsButton').disabled = state.availableOus.length === 0 && !state.ouProvisionSuggested;
+      if (data.ouSetup.ouSelectionRequired) openOuModal();
+    }
+    toast(data.ouDiscoveryWarning || (editing ? '账号连接已更新' : `已保存 ${data.accountName}`));
   } catch (error) { $('formMessage').className = 'form-message error'; $('formMessage').textContent = error.message; }
   finally { $('connectButton').disabled = false; $('connectButton').textContent = editing ? '保存修改' : '验证并保存连接'; }
 }
@@ -251,6 +265,18 @@ async function saveOuConfig() {
   } catch (error) { $('ouFormMessage').className = 'form-message error'; $('ouFormMessage').textContent = error.message; }
   finally { $('saveOuConfigButton').disabled = false; $('saveOuConfigButton').textContent = '保存'; }
 }
+async function provisionOus() {
+  const missing = [state.missingOus.temporary && '“临时”OU', state.missingOus.blocked && '“禁止 SP/RI”OU'].filter(Boolean).join('、');
+  const message = `确认在当前 AWS Organization 中创建并配置吗？\n\n${missing || '标准 OU'}\n启用 SCP，并配置 SP/RI-Deny、Organizations 和 FullAWSAccess。\n\n已有的 OU、策略和挂载不会重复创建。`;
+  if (!confirm(message)) return;
+  $('provisionOuButton').disabled = true; $('provisionOuButton').textContent = '配置中…';
+  try {
+    await api(`/api/connections/${state.connectionId}/provision-ou`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true }) });
+    closeOuModal(); toast('OU 和 SCP 已配置'); await loadOrganization(true);
+  } catch (error) {
+    $('ouFormMessage').className = 'form-message error'; $('ouFormMessage').textContent = error.message;
+  } finally { $('provisionOuButton').disabled = false; $('provisionOuButton').textContent = '创建并配置'; }
+}
 
 $('addAccountButton').addEventListener('click', openAddModal);
 $('manageAccountButton').addEventListener('click', openManager);
@@ -263,6 +289,7 @@ $('refreshButton').addEventListener('click', () => loadOrganization(true));
 $('ouSettingsButton').addEventListener('click', openOuModal);
 $('closeOuModalButton').addEventListener('click', closeOuModal);
 $('saveOuConfigButton').addEventListener('click', saveOuConfig);
+$('provisionOuButton').addEventListener('click', provisionOus);
 $('scanButton').addEventListener('click', scanUngrouped);
 $('connectionSelect').addEventListener('change', event => { state.connectionId = event.target.value; loadOrganization(); });
 $('searchInput').addEventListener('input', renderAccounts);
